@@ -1,0 +1,24 @@
+[project]
+name = "tg-garmin-to-osm"
+version = "0.1.0"
+license = {text = "Apache-2.0"}
+description = "Telegram-controlled service: new Garmin rides are uploaded to OpenStreetMap as GPS traces"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.31",
+    "tg-botkit @ https://github.com/ExiosV/tg-botkit/archive/refs/tags/v0.3.0.tar.gz",
+    "garminconnect==0.3.20",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
