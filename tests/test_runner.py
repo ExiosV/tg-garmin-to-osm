@@ -518,4 +518,6 @@ def test_handle_updates_resyncs_stale_offset(tmp_path):
         pass
     assert handle_updates(c, tg, st) == 1
     assert st.get_meta("updates_offset") == "242062025"  # resynced from the server's true queue
-    assert tg.updates_calls[-1] == 242062025  # the next poll starts after the delivered update
+    tg.updates_result = []  # the next poll must start exactly after the delivered update
+    handle_updates(c, tg, st)
+    assert tg.updates_calls[-1] == 242062025
