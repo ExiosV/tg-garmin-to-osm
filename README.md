@@ -5,7 +5,8 @@ every ride (or any activity you enable), uploads the track to OSM as a GPS trace
 link to the trace and an **“edit the map in iD against this trace”** link, so you can improve roads,
 tracks and surfaces where you actually rode.
 
-Talk to the bot: **[@igorp_garmin_osm_bot](https://t.me/igorp_garmin_osm_bot)**
+Talk to the bot: **[@garmin_to_osm_bot](https://t.me/garmin_to_osm_bot)**.
+Linking site: **https://garmin-osm.exiosv.com** (repo: `garmin-to-osm-web`).
 
 ```
 pip install -e .[dev] && pytest
@@ -16,15 +17,20 @@ python -m tg_garmin_to_osm backfill --since 2026-08-22 [--dry-run]  # one-off hi
 ```
 Config: see `.env.example`.
 
-## Getting started (in the bot chat)
+## Getting started
 
-1. **/garmin** — link Garmin. The bot asks for your Garmin Connect email, then the password (both
-   messages are deleted immediately; nothing is stored except the resulting token file), then an
-   MFA code if Garmin asks for one. Tokens are refreshed by the library, so the password is needed
-   exactly once. Garmin may occasionally throttle datacenter IPs — if linking fails, retry later.
-2. **/login** — link OSM. The bot sends an OpenStreetMap OAuth 2 link (out-of-band flow); you sign
-   in, paste the code from the page, done. The bot only asks for `read_prefs read_gpx write_gpx`.
-3. That's it — new rides upload automatically and you get the edit link once OSM processes the trace.
+1. **/link** in the bot chat — open **https://garmin-osm.exiosv.com** and sign in with Telegram
+   (Login Widget; this is how the site knows which chat the accounts belong to).
+2. **Link Garmin** on the site — enter your Garmin Connect email and password there (over HTTPS;
+   the password is used once and never stored, only the resulting session tokens; a 2FA code page
+   follows if Garmin asks). Why a site and not the chat: Garmin has no public OAuth for third-party
+   apps (official access needs a partner account), so the handshake runs on our HTTPS backend and
+   the password never passes through Telegram.
+3. **Link OSM** on the site — a real OAuth 2 redirect flow: you confirm access on
+   openstreetmap.org itself, the site receives the token automatically. Only
+   `read_prefs read_gpx write_gpx` are requested.
+4. That's it — new rides upload automatically and you get the edit link once OSM processes the
+   trace. Fallback: `/login` pastes an OSM out-of-band code right in the chat.
 
 All commands work for any user in a private chat:
 
