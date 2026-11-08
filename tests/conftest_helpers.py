@@ -108,6 +108,8 @@ class _Tg:
         return True
 
     def updates(self, offset, wait=25):
+        self.updates_calls = getattr(self, "updates_calls", [])
+        self.updates_calls.append(offset)
         return self.updates_result
 
 

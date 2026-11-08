@@ -504,3 +504,18 @@ def test_ingest_osm_link(tmp_path):
 def pathlib_path(base):
     import pathlib
     return pathlib.Path(base).expanduser()
+
+
+def test_handle_updates_resyncs_stale_offset(tmp_path):
+    """A token swap on an existing DB: the stored offset belongs to the OLD bot; the server ignores
+    it and re-delivers low ids. The bot must resync instead of looping on the same update."""
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    st.set_meta("updates_offset", "457905209")  # stale, from the previous bot
+    tg = _Tg()
+    tg.updates_result = [{"update_id": 242062024, "message": msg("/start", chat=1, user=1)}]
+    class _Spy(_Garmin):
+        pass
+    assert handle_updates(c, tg, st) == 1
+    assert st.get_meta("updates_offset") == "242062025"  # resynced from the server's true queue
+    assert tg.updates_calls[-1] == 242062025  # the next poll starts after the delivered update

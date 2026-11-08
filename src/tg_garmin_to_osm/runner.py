@@ -473,6 +473,13 @@ def handle_updates(cfg: Config, tg: Telegram, state: State, wait: int = 25) -> i
     """Long-poll Telegram and dispatch user messages. Never breaks the cycle on one bad update."""
     offset = int(state.get_meta(UPDATES_OFFSET, "0") or 0)
     updates = tg.updates(offset, wait=wait)
+    ids = [int(u.get("update_id") or 0) for u in updates]
+    if ids and max(ids) + 1 <= offset:
+        # the server ignored our offset: it is a different bot/chat than the one this DB offset came
+        # from (e.g. a token swap on an existing database) — resync, or every poll re-processes
+        log.warning("stored updates_offset %s is beyond the server queue (max %s): resyncing",
+                    offset, max(ids))
+        offset = max(ids) + 1
     handled = 0
     for update in updates:
         offset = max(offset, int(update.get("update_id") or 0)) + 1
