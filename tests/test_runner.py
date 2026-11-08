@@ -587,3 +587,131 @@ def test_cycle_uses_api_client_when_key_present(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, "Osm", _Osm)
     cycle(c, _Tg(), st)
     assert seen == ["KEYUSER5"]  # the API client was chosen for the key-linked user
+
+
+# -- onboarding dialog -----------------------------------------------------------------------------------------------
+
+def cb(data, uid=42, chat=-1001, lang="ru"):
+    return {"id": "cbq1", "data": data,
+            "from": {"id": uid, "language_code": lang},
+            "message": {"chat": {"id": chat, "type": "private"}, "message_id": 9}}
+
+
+def test_start_sends_button_menu(tmp_path):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    tg = _Tg()
+    assert runner_mod._handle_message(c, tg, st, msg("/start")) is True
+    chat, text = tg.sent[0]
+    assert "/link" not in text or "What next" in text or "Что делаем" in text
+    assert tg.last_rows and any(lbl.endswith("Привязать Garmin") or lbl.endswith("Link Garmin")
+                                for lbl, _ in tg.last_rows[0])
+
+
+def test_callback_garmin_menu_and_key_stage(tmp_path):
+    import tg_garmin_to_osm.onboarding as onb
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    link_user(st)
+    tg = _Tg()
+    assert runner_mod._handle_callback(c, tg, st, cb(onb.CB_GARMIN_START)) is True
+    assert tg.answered == 1
+    menu_text = tg.sent[-1][1]
+    assert "personalApiToken" in menu_text and "Create Key" in menu_text
+    have_key_rows = [row for row in tg.last_rows
+                     if any(d == onb.CB_GARMIN_HAVE_KEY for _, d in row)]
+    assert have_key_rows  # the enter-key button exists
+    # press "I have the key": pending stage set, prompt sent
+    assert runner_mod._handle_callback(c, tg, st, cb(onb.CB_GARMIN_HAVE_KEY)) is True
+    assert runner_mod.PENDING[42]["stage"] == onb.STAGE_GARMIN_KEY
+    assert any("Send your Personal API key" in t or "пришлите" in t.lower() for _, t in tg.sent[-1:])
+
+
+def test_dialog_key_input_deletes_and_links(tmp_path, monkeypatch):
+    import tg_garmin_to_osm.onboarding as onb
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    link_user(st)
+    tg = _Tg()
+    runner_mod.PENDING[42] = {"stage": onb.STAGE_GARMIN_KEY, "ts": time.time()}
+    monkeypatch.setattr(runner_mod, "GarminApiClient",
+                        lambda key: _Garmin(activities=[act(), act(2), act(3)]))
+    m = msg("SECRETKEY98765")
+    assert runner_mod._handle_message(c, tg, st, m) is True
+    assert (m["chat"]["id"], m["message_id"]) in tg.deleted          # the key message is deleted
+    assert st.user(42)["garmin_api_key"] == "SECRETKEY98765"
+    assert any("Personal API" in t for _, t in tg.sent)
+    assert runner_mod.PENDING.get(42) is None
+
+
+def test_callback_osm_menu_site_and_code(tmp_path, monkeypatch):
+    import tg_garmin_to_osm.onboarding as onb
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    link_user(st)
+    tg = _Tg()
+    assert runner_mod._handle_callback(c, tg, st, cb(onb.CB_OSM_MENU)) is True
+    assert any("openstreetmap" in t.lower() for _, t in tg.sent[-1:])
+    assert runner_mod._handle_callback(c, tg, st, cb(onb.CB_OSM_SITE)) is True
+    assert any("garmin-osm.exiosv.com" in t for _, t in tg.sent[-1:])
+    assert runner_mod._handle_callback(c, tg, st, cb(onb.CB_OSM_CODE)) is True
+    assert any("oauth2/authorize" in t for _, t in tg.sent[-1:])
+    assert runner_mod.PENDING[42]["stage"] == onb.STAGE_OSM_CODE
+
+
+def test_callback_status_and_back(tmp_path):
+    import tg_garmin_to_osm.onboarding as onb
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    link_user(st)
+    tg = _Tg()
+    assert runner_mod._handle_callback(c, tg, st, cb(onb.CB_STATUS)) is True
+    assert any("tg-garmin-to-osm" in t for _, t in tg.sent[-1:])
+    assert runner_mod._handle_callback(c, tg, st, cb(onb.CB_BACK)) is True
+    assert any("What next" in t or "Что делаем" in t for _, t in tg.sent[-1:])
+
+
+def test_callback_unlink(tmp_path):
+    import tg_garmin_to_osm.onboarding as onb
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    link_user(st)
+    tg = _Tg()
+    runner_mod._handle_callback(c, tg, st, cb("onb:garmin:unlink"))
+    assert st.user(42)["garmin_linked"] == 0
+    runner_mod._handle_callback(c, tg, st, cb("onb:osm:unlink"))
+    assert st.user(42)["osm_access_token"] is None
+
+
+def test_buttons_english_for_non_ru(tmp_path):
+    import tg_garmin_to_osm.onboarding as onb
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    tg = _Tg()
+    runner_mod._handle_message(c, tg, st, msg("/start", lang="en"))
+    assert any("Link Garmin" in lbl for lbl, _ in tg.last_rows[0])
+    runner_mod._handle_callback(c, tg, st, cb(onb.CB_GARMIN_START, lang="en"))
+    assert "Link Garmin" in tg.sent[-1][1]  # the menu text is English too
+
+
+def test_guide_sends_assets_or_text(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    u = link_user(st, lang="en")
+    tg = _Tg()
+    # no assets shipped in the test: text fallback with the picture-guide caption
+    runner_mod._send_guide(c, tg, -1001, "en")
+    assert any("Account Settings" in t for _, t in tg.sent)
+
+
+def test_guide_sends_real_images_when_present(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    tg = _Tg()
+    fake_pkg = tmp_path / "pkg"
+    (fake_pkg / "assets").mkdir(parents=True)
+    (fake_pkg / "assets" / "step1.png").write_bytes(b"PNG-bytes")
+    monkeypatch.setattr(runner_mod, "__file__", str(fake_pkg / "runner.py"))
+    runner_mod._send_guide(c, tg, -1001, "en")
+    assert tg.photos and tg.photos[0][1] == "step1.png"      # the image was sent from assets
+    assert tg.photos[0][2] == b"PNG-bytes"

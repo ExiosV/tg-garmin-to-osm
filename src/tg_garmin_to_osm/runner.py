@@ -10,6 +10,7 @@ from . import osm as osmmod
 from .config import TYPE_GROUPS, Config, VISIBILITIES, expand_types
 from .garmin import GarminClient, course_id, is_auth_error, user_token_dir
 from .garmin_api import GarminApiClient, GarminApiError, is_auth_error as api_is_auth_error
+from . import onboarding
 from .osm import Osm, OsmError
 from .redact import add_secret, redact
 from .state import State
@@ -252,6 +253,106 @@ def cycle(cfg: Config, tg: Telegram, state: State) -> list:
 
 # -- linking ---------------------------------------------------------------------------------------------------------
 
+def apply_garmin_key(cfg: Config, tg: Telegram, state: State, uid: int, key: str) -> None:
+    """Store a Personal API key (from the dialog or /garminkey), verify it live, reply."""
+    state.set_garmin_key(uid, key)
+    add_secret(key)
+    user = state.user(uid)
+    try:
+        garmin = GarminApiClient(key)
+        n = len(garmin.recent_activities(3))
+        tg.send(user["chat_id"], i18n.text(user_lang(user), "garminkey_ok", n=n))
+    except Exception as e:
+        state.unlink_garmin(uid)
+        log.error("garmin key check failed: %s", redact(e))
+        tg.send(user["chat_id"], i18n.text(user_lang(user or {}), "garminkey_bad"))
+
+
+def _send_guide(cfg: Config, tg: Telegram, chat_id: int, lang: str) -> None:
+    """The picture guide: real screenshots from assets/ when present, otherwise the text steps."""
+    import os
+    assets = os.path.join(os.path.dirname(__file__), "assets")
+    try:
+        files = sorted(f for f in os.listdir(assets) if f.lower().endswith((".png", ".jpg")))
+    except OSError:
+        files = []
+    caption = onboarding.garmin_guide_caption(lang)
+    sent = 0
+    for f in files:
+        try:
+            with open(os.path.join(assets, f), "rb") as fh:
+                tg.photo(chat_id, caption if sent == 0 else "", fh.read(), f)
+            sent += 1
+        except Exception as e:
+            log.warning("guide photo %s failed: %s", f, redact(e))
+    if not sent:  # no assets shipped: the text steps carry the guide
+        tg.send(chat_id, caption)
+
+
+def _handle_callback(cfg: Config, tg: Telegram, state: State, cb: dict) -> bool:
+    """Inline-button presses from the onboarding dialog. Always answers the callback."""
+    cid = cb.get("id")
+    data = cb.get("data") or ""
+    msg = cb.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    uid = (cb.get("from") or {}).get("id") or 0
+    if cid:
+        tg.answer_callback(cid)
+    if not uid or not chat_id:
+        return False
+    user = state.touch_user(uid, chat_id, (cb.get("from") or {}).get("language_code") or "")
+    lang = user_lang(user)
+    linked_garmin = bool(user["garmin_linked"])
+    linked_osm = bool(user["osm_access_token"])
+
+    def T(key, **kw):
+        return i18n.text(lang, key, **kw)
+
+    def menu(kind):
+        text, rows = (onboarding.garmin_menu_rows(lang, linked_garmin) if kind == "garmin"
+                      else onboarding.osm_menu_rows(lang, linked_osm))
+        tg.buttons(chat_id, text, rows)
+
+    if data == onboarding.CB_LINK_MENU:
+        menu("garmin")
+    elif data == onboarding.CB_GARMIN_START:
+        menu("garmin")
+    elif data == onboarding.CB_GARMIN_HAVE_KEY:
+        PENDING[uid] = {"stage": onboarding.STAGE_GARMIN_KEY, "ts": time.time()}
+        tg.send(chat_id, T("onb_send_key"))
+    elif data == onboarding.CB_GARMIN_GUIDE:
+        _send_guide(cfg, tg, chat_id, lang)
+    elif data == onboarding.CB_OSM_MENU:
+        menu("osm")
+    elif data == onboarding.CB_OSM_SITE:
+        tg.send(chat_id, T("link_site", url=cfg.link_site))
+    elif data == onboarding.CB_OSM_CODE:
+        if not cfg.osm_client_id:
+            tg.send(chat_id, T("login_no_client"))
+            return True
+        PENDING[uid] = {"stage": onboarding.STAGE_OSM_CODE, "ts": time.time()}
+        tg.send(chat_id, T("login", url=osmmod.authorize_url(cfg.osm_base, cfg.osm_client_id)))
+    elif data == onboarding.CB_STATUS:
+        tg.send(chat_id, _status_text(cfg, state, state.user(uid) or user,
+                                      lambda key, **kw: i18n.text(lang, key, **kw)))
+    elif data == onboarding.CB_BACK:
+        text, rows = onboarding.main_menu_rows(lang)
+        tg.buttons(chat_id, text, rows)
+    elif data == "onb:garmin:unlink":
+        state.unlink_garmin(uid)
+        tg.send(chat_id, T("unlink_done", what="garmin"))
+        menu("garmin")
+    elif data == "onb:osm:unlink":
+        state.unlink_osm(uid)
+        tg.send(chat_id, T("unlink_done", what="osm"))
+        menu("osm")
+    else:
+        log.debug("unknown callback data: %s", data)
+    return True
+
+
+
+
 def ingest_garmin_link(cfg: Config, tg: Telegram, state: State, uid: int, tokens: str) -> None:
     """Ingest callback: the web site completed a Garmin login and sends the token store over."""
     d = user_token_dir(cfg.garmin_token_dir, uid)
@@ -283,7 +384,8 @@ def ingest_osm_link(cfg: Config, tg: Telegram, state: State, uid: int, access_to
 
 
 def _pending_flow(cfg: Config, tg: Telegram, state: State, msg: dict, uid: int, text: str) -> bool:
-    """Drive the /login out-of-band code dialog (the only in-chat dialog left). Returns True if consumed."""
+    """Drive an in-progress dialog (OSM code, Garmin key). Returns True if consumed.
+    Any /command other than /cancel abandons the dialog — commands always work."""
     p = pending_get(uid)
     if not p:
         return False
@@ -292,9 +394,18 @@ def _pending_flow(cfg: Config, tg: Telegram, state: State, msg: dict, uid: int, 
         PENDING.pop(uid, None)
         tg.reply_msg(msg, i18n.text(lang, "cancel_done"))
         return True
+    if text.startswith("/"):
+        PENDING.pop(uid, None)  # a command wins over a stale dialog
+        return False
     if p["stage"] == "osm_code":
         PENDING.pop(uid, None)
         _osm_link(cfg, tg, state, msg, uid, text)
+        return True
+    if p["stage"] == onboarding.STAGE_GARMIN_KEY:
+        PENDING.pop(uid, None)
+        chat_id = (msg.get("chat") or {}).get("id")
+        tg.delete(chat_id, msg.get("message_id"))  # the key leaves the chat at once
+        apply_garmin_key(cfg, tg, state, uid, text)
         return True
     return False
 
@@ -347,26 +458,19 @@ def _handle_command(cfg: Config, tg: Telegram, state: State, msg: dict, cmd: str
         return i18n.text(lang, key, code, **kw)
 
     if cmd in ("/start",):
-        tg.reply_msg(msg, T("start"))
+        text, rows = onboarding.main_menu_rows(lang)
+        tg.buttons(chat_id=(msg.get("chat") or {}).get("id"), text=T("start") + "\n\n" + text,
+                   rows=rows)
     elif cmd == "/help":
         tg.reply_msg(msg, T("help"))
     elif cmd == "/link":
         tg.reply_msg(msg, T("link_site", url=cfg.link_site))
     elif cmd == "/garminkey":
+        tg.delete((msg.get("chat") or {}).get("id"), msg.get("message_id"))  # the key leaves the chat
         if not arg:
             tg.reply_msg(msg, T("garminkey_usage"))
             return
-        tg.delete((msg.get("chat") or {}).get("id"), msg.get("message_id"))  # the key leaves the chat
-        state.set_garmin_key(uid, arg.strip())
-        add_secret(arg.strip())
-        try:
-            garmin = GarminApiClient(arg.strip())
-            n = len(garmin.recent_activities(3))
-            tg.reply_msg(msg, T("garminkey_ok", n=n))
-        except Exception as e:
-            state.unlink_garmin(uid)
-            log.error("garmin key check failed: %s", redact(e))
-            tg.reply_msg(msg, T("garminkey_bad"))
+        apply_garmin_key(cfg, tg, state, uid, arg.strip())
     elif cmd == "/login":
         if not cfg.osm_client_id:
             tg.reply_msg(msg, T("login_no_client"))

@@ -57,6 +57,8 @@ MESSAGES = {
         "login_fail": "⚠️ Обмен кода не удался: {err}. /login — попробовать заново.",
         "link_site": "🔗 Откройте сайт привязки и войдите через Telegram:\n{url}\n"
                      "Там же привязываются Garmin и OSM; подтверждения придут сюда.",
+        "onb_send_key": "🔑 Пришлите ключ следующим сообщением — оно будет удалено сразу, "
+                        "я сохраню только ключ. /cancel — отмена.",
         "garminkey_usage": "🔑 Пришлите команду с вашим Personal API ключом одним сообщением: "
                            "/garminkey ВАШ_КЛЮЧ\n"
                            "Ключ создаётся в Garmin Connect: Settings → Personal API Token "
@@ -165,6 +167,8 @@ MESSAGES = {
         "login_fail": "⚠️ Code exchange failed: {err}. /login to retry.",
         "link_site": "🔗 Open the linking site and sign in with Telegram:\n{url}\n"
                      "Link Garmin and OSM there; confirmations will arrive in this chat.",
+        "onb_send_key": "🔑 Send the key as your next message — it will be deleted right away, "
+                        "I only keep the key itself. /cancel to abort.",
         "garminkey_usage": "🔑 Send your Personal API key in one message: /garminkey YOUR_KEY\n"
                            "Create it in Garmin Connect: Settings → Personal API Token "
                            "(https://connect.garmin.com/app/settings/personalApiToken) — choose the "

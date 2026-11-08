@@ -49,7 +49,7 @@ def test_updates_passes_offset_wait_allowed(monkeypatch):
     tg = Telegram("TOK", "https://api.local")
     assert tg.updates(2, wait=7) == [{"update_id": 3}]
     assert calls[0]["data"]["offset"] == 2 and calls[0]["data"]["timeout"] == 7
-    assert json.loads(calls[0]["data"]["allowed_updates"]) == ["message"]
+    assert json.loads(calls[0]["data"]["allowed_updates"]) == ["message", "callback_query"]
 
 
 def test_send_html_falls_back_to_plain(monkeypatch):

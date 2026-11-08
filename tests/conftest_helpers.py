@@ -100,6 +100,21 @@ class _Tg:
         self.sent.append((chat_id, text))
         return len(self.sent)
 
+    def buttons(self, chat_id, text, rows):
+        self.sent.append((chat_id, text))
+        self.last_rows = rows
+        return len(self.sent)
+
+    def photo(self, chat_id, caption, image, filename="step.png"):
+        self.photos = getattr(self, "photos", [])
+        self.photos.append((chat_id, filename, bytes(image)))
+        self.sent.append((chat_id, caption or "[photo]"))
+        return len(self.sent)
+
+    def answer_callback(self, callback_query_id):
+        self.answered = getattr(self, "answered", 0) + 1
+        return True
+
     def reply_msg(self, msg, text, silent=False):
         return self.send((msg.get("chat") or {}).get("id"), text, silent)
 
