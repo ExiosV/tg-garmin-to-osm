@@ -521,3 +521,69 @@ def test_handle_updates_resyncs_stale_offset(tmp_path):
     tg.updates_result = []  # the next poll must start exactly after the delivered update
     handle_updates(c, tg, st)
     assert tg.updates_calls[-1] == 242062025
+
+
+def test_garminkey_command_deletes_message_and_stores_key(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    tg = _Tg()
+    monkeypatch.setattr(runner_mod, "GarminApiClient",
+                        lambda key: _Garmin(activities=[act(), act(2), act(3)]))
+    m = msg("/garminkey SECRETKEY12345")
+    assert runner_mod._handle_message(c, tg, st, m) is True
+    assert tg.deleted == [(-1001, 7)]          # the key message was deleted
+    assert st.user(42)["garmin_api_key"] == "SECRETKEY12345"
+    assert st.user(42)["garmin_linked"] == 1
+    assert any("Personal API" in t and "3" in t for _, t in tg.sent)  # the probe saw 3 activities
+
+
+def test_garminkey_bad_key_unlinks(tmp_path, monkeypatch):
+    import tg_garmin_to_osm.garmin_api as ga
+    from tg_garmin_to_osm.osm import OsmError as _  # noqa
+
+    class _Boom:
+        def __init__(self, key):
+            pass
+
+        def recent_activities(self, limit=3):
+            raise ga.GarminApiError("exchange", 401, "")
+
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    link_user(st)
+    tg = _Tg()
+    monkeypatch.setattr(runner_mod, "GarminApiClient", _Boom)
+    monkeypatch.setattr(runner_mod.Osm, "user_name", lambda self: "")
+    runner_mod._handle_command(c, tg, st, msg("/garminkey BADKEY123456"), "/garminkey", "BADKEY123456")
+    assert st.user(42)["garmin_linked"] == 0
+    assert any("не принял" in t or "rejected" in t for _, t in tg.sent)
+
+
+def test_garminkey_usage_hint_without_arg(tmp_path):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    tg = _Tg()
+    runner_mod._handle_command(c, tg, st, msg("/garminkey"), "/garminkey", "")
+    assert any("personalApiToken" in t for _, t in tg.sent)
+
+
+def test_cycle_uses_api_client_when_key_present(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    st.touch_user(5, -1005, "en")
+    st.set_garmin_key(5, "KEYUSER5")
+    st.save_osm_user(5, -1005, "T5", "u5")
+    seen = []
+
+    class _ApiSpy:
+        def __init__(self, key):
+            self.key = key
+
+        def recent_activities(self, limit=10):
+            seen.append(self.key)
+            return []
+
+    monkeypatch.setattr(runner_mod, "GarminApiClient", _ApiSpy)
+    monkeypatch.setattr(runner_mod, "Osm", _Osm)
+    cycle(c, _Tg(), st)
+    assert seen == ["KEYUSER5"]  # the API client was chosen for the key-linked user

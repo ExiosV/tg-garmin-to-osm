@@ -19,18 +19,20 @@ Config: see `.env.example`.
 
 ## Getting started
 
-1. **/link** in the bot chat — open **https://garmin-osm.exiosv.com** and sign in with Telegram
-   (Login Widget; this is how the site knows which chat the accounts belong to).
-2. **Link Garmin** on the site — enter your Garmin Connect email and password there (over HTTPS;
-   the password is used once and never stored, only the resulting session tokens; a 2FA code page
-   follows if Garmin asks). Why a site and not the chat: Garmin has no public OAuth for third-party
-   apps (official access needs a partner account), so the handshake runs on our HTTPS backend and
-   the password never passes through Telegram.
-3. **Link OSM** on the site — a real OAuth 2 redirect flow: you confirm access on
-   openstreetmap.org itself, the site receives the token automatically. Only
-   `read_prefs read_gpx write_gpx` are requested.
-4. That's it — new rides upload automatically and you get the edit link once OSM processes the
-   trace. Fallback: `/login` pastes an OSM out-of-band code right in the chat.
+1. **Link Garmin** — either
+   - **`/garminkey <your key>`** in the bot chat (no site needed): create a Personal API key at
+     [Garmin Connect → Settings → Personal API Token](https://connect.garmin.com/app/settings/personalApiToken)
+     (choose the longest expiration), paste it after the command; the message is deleted right away,
+     and the key is used to read **your own data only** via the official
+     [Personal API](https://developer.garmin.com/gc-developer-program/personal/personal-api/)
+     (read-only, revocable anytime in the same settings page); or
+   - **`/link`** → the linking site → sign in with Telegram → Link Garmin (a Garmin-session
+     handshake on our HTTPS backend; the password is used once and never stored).
+2. **Link OSM** — on the site (real OAuth 2 redirect: you confirm on openstreetmap.org; only
+   `read_prefs read_gpx write_gpx` requested), or the `/login` fallback pastes an out-of-band code
+   in the chat.
+3. That's it — new rides upload automatically and you get the edit link once OSM processes the
+   trace. Traces come from the activity GPX export (FIT-converted when needed).
 
 All commands work for any user in a private chat:
 
@@ -107,7 +109,10 @@ All commands work for any user in a private chat:
   everyone (per-user token stores and settings, isolated activity rows).
 - A trace that OSM rejects asynchronously stays `uploaded` forever (visible in `/pending`).
 - Foreign/deleted Garmin course ids cannot be resolved to a name — the course suffix is simply
-  omitted.
+  omitted; Personal-API-linked users have no course names at all (the official API has no course
+  lookup).
+- The Personal API is read-only and rate-limited by Garmin; activity type groups still work (the
+  summaries carry the typeKey).
 - The bot must own `getUpdates` (no webhook, no other consumer for the token).
 
 ## Disclaimer

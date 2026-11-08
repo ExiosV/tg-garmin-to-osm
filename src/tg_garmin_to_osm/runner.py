@@ -9,8 +9,9 @@ from . import i18n
 from . import osm as osmmod
 from .config import TYPE_GROUPS, Config, VISIBILITIES, expand_types
 from .garmin import GarminClient, course_id, is_auth_error, user_token_dir
+from .garmin_api import GarminApiClient, GarminApiError, is_auth_error as api_is_auth_error
 from .osm import Osm, OsmError
-from .redact import redact
+from .redact import add_secret, redact
 from .state import State
 from .telegram import Telegram, UPDATES_OFFSET
 
@@ -136,8 +137,9 @@ def upload_one(cfg: Config, garmin: GarminClient, osm: Osm, state: State, user: 
         data = garmin.download_gpx(aid)
         gpxmod.validate_gpx(data)
     except Exception as e:  # Garmin-side or file problem: do not burn an attempt, retry on the next scan
-        if is_auth_error(e):
-            garmin.reset()
+        if is_auth_error(e) or api_is_auth_error(e):
+            if hasattr(garmin, "reset"):
+                garmin.reset()
             _notify_garmin_expired(cfg, tg, state, user)
         log.error("garmin download failed for %s/%s: %s", uid, aid, redact(e))
         return 0
@@ -212,9 +214,17 @@ def check_pending(cfg: Config, tg: Telegram, state: State, user: dict) -> int:
     return done
 
 
+def garmin_client_for(cfg: Config, user: dict):
+    """The right Garmin client for the user's linkage kind: Personal API key (official) or the
+    legacy garminconnect token store from the web-site handshake."""
+    if user.get("garmin_api_key"):
+        return GarminApiClient(user["garmin_api_key"])
+    return GarminClient(user_token_dir(cfg.garmin_token_dir, user["user_id"]))
+
+
 def user_cycle(cfg: Config, tg: Telegram, state: State, user: dict) -> dict:
     """One full pass for one user: notice new activities, upload due rides, report processed traces."""
-    garmin = GarminClient(user_token_dir(cfg.garmin_token_dir, user["user_id"]))
+    garmin = garmin_client_for(cfg, state.user(user["user_id"]) or user)
     seen = scan_activities(cfg, garmin, state, user)
     return {
         "seen": seen,
@@ -342,6 +352,21 @@ def _handle_command(cfg: Config, tg: Telegram, state: State, msg: dict, cmd: str
         tg.reply_msg(msg, T("help"))
     elif cmd == "/link":
         tg.reply_msg(msg, T("link_site", url=cfg.link_site))
+    elif cmd == "/garminkey":
+        if not arg:
+            tg.reply_msg(msg, T("garminkey_usage"))
+            return
+        tg.delete((msg.get("chat") or {}).get("id"), msg.get("message_id"))  # the key leaves the chat
+        state.set_garmin_key(uid, arg.strip())
+        add_secret(arg.strip())
+        try:
+            garmin = GarminApiClient(arg.strip())
+            n = len(garmin.recent_activities(3))
+            tg.reply_msg(msg, T("garminkey_ok", n=n))
+        except Exception as e:
+            state.unlink_garmin(uid)
+            log.error("garmin key check failed: %s", redact(e))
+            tg.reply_msg(msg, T("garminkey_bad"))
     elif cmd == "/login":
         if not cfg.osm_client_id:
             tg.reply_msg(msg, T("login_no_client"))
@@ -399,7 +424,7 @@ def _handle_command(cfg: Config, tg: Telegram, state: State, msg: dict, cmd: str
                                       row["distance_km"], "new")
             else:
                 state.set_status(uid, arg, "new")
-            garmin = GarminClient(user_token_dir(cfg.garmin_token_dir, uid))
+            garmin = garmin_client_for(cfg, state.user(uid))
             osm = Osm(cfg.osm_base, user["osm_access_token"])
             row = state.activity(uid, arg)
             trace_id = upload_one(cfg, garmin, osm, state, user, row, tg, user_vis(user, cfg))

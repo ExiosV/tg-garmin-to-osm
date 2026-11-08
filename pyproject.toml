@@ -6,6 +6,7 @@ description = "Telegram-controlled service: new Garmin rides are uploaded to Ope
 requires-python = ">=3.12"
 dependencies = [
     "requests>=2.31",
+    "fitdecode>=0.10",
     "tg-botkit @ https://github.com/ExiosV/tg-botkit/archive/refs/tags/v0.3.0.tar.gz",
     "garminconnect==0.3.20",
 ]

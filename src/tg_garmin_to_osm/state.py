@@ -22,7 +22,8 @@ class State:
             "CREATE TABLE IF NOT EXISTS users ("
             "user_id INTEGER PRIMARY KEY, chat_id INTEGER, osm_access_token TEXT, osm_name TEXT, "
             "created_ts INTEGER, garmin_linked INTEGER DEFAULT 0, auto INTEGER DEFAULT 1, "
-            "types TEXT DEFAULT 'bike', visibility TEXT DEFAULT 'identifiable', lang TEXT DEFAULT '')"
+            "types TEXT DEFAULT 'bike', visibility TEXT DEFAULT 'identifiable', lang TEXT DEFAULT '', "
+            "garmin_api_key TEXT)"
         )
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS activities ("
@@ -41,7 +42,8 @@ class State:
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(users)")}
         for name, ddl in (("garmin_linked", "INTEGER DEFAULT 0"), ("auto", "INTEGER DEFAULT 1"),
                           ("types", "TEXT DEFAULT 'bike'"),
-                          ("visibility", "TEXT DEFAULT 'identifiable'"), ("lang", "TEXT DEFAULT ''")):
+                          ("visibility", "TEXT DEFAULT 'identifiable'"), ("lang", "TEXT DEFAULT ''"),
+                          ("garmin_api_key", "TEXT")):
             if name not in cols:
                 self.db.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
 
@@ -103,16 +105,26 @@ class State:
         self.db.commit()
 
     def unlink_garmin(self, user_id: int) -> None:
-        self.set_garmin_linked(user_id, False)
+        self.db.execute(
+            "UPDATE users SET garmin_linked=0, garmin_api_key=NULL WHERE user_id=?", (int(user_id),)
+        )
+        self.db.commit()
+
+    def set_garmin_key(self, user_id: int, api_key: str) -> None:
+        """Store the Personal API key; it IS the Garmin link (legacy garmin_linked kept for the
+        web-site token-file path)."""
+        self.set_setting(user_id, "garmin_api_key", api_key)
+        self.set_garmin_linked(user_id, True)
 
     def set_setting(self, user_id: int, column: str, value) -> None:
-        assert column in ("auto", "types", "visibility", "lang"), column
+        assert column in ("auto", "types", "visibility", "lang", "garmin_api_key"), column
         self.touch_user(user_id, user_id)  # settings work even before any link exists
         self.db.execute(f"UPDATE users SET {column}=? WHERE user_id=?", (str(value), int(user_id)))
         self.db.commit()
 
     def garmin_osm_users(self) -> list:
-        """Users with both a Garmin token store and an OSM token: the ones the cycle serves."""
+        """Users with both a Garmin link (Personal API key or legacy token file) and an OSM token:
+        the ones the cycle serves."""
         rows = self.db.execute(
             "SELECT * FROM users WHERE garmin_linked=1 AND osm_access_token IS NOT NULL ORDER BY user_id"
         ).fetchall()

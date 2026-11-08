@@ -33,6 +33,7 @@ MESSAGES = {
         "help": (
             "Garmin → OSM: автозагрузка велотреков (и не только) на карту.\n"
             "/link — сайт привязки Garmin и OSM (вход через Telegram)\n"
+            "/garminkey КЛЮЧ — привязать Garmin Personal API ключом (без сайта)\n"
             "/login — запасной вход в OSM кодом из браузера\n"
             "/status — состояние и настройки\n"
             "/sync — сканировать Garmin и загрузить сейчас\n"
@@ -56,6 +57,16 @@ MESSAGES = {
         "login_fail": "⚠️ Обмен кода не удался: {err}. /login — попробовать заново.",
         "link_site": "🔗 Откройте сайт привязки и войдите через Telegram:\n{url}\n"
                      "Там же привязываются Garmin и OSM; подтверждения придут сюда.",
+        "garminkey_usage": "🔑 Пришлите команду с вашим Personal API ключом одним сообщением: "
+                           "/garminkey ВАШ_КЛЮЧ\n"
+                           "Ключ создаётся в Garmin Connect: Settings → Personal API Token "
+                           "(https://connect.garmin.com/app/settings/personalApiToken) — выберите "
+                           "максимальный срок действия. Сообщение с ключом будет удалено сразу.",
+        "garminkey_ok": "✅ Garmin связан через Personal API ({n} последних активностей видны). "
+                        "Остался /login для OSM — или он уже сделан на сайте.",
+        "garminkey_bad": "⚠️ Garmin не принял ключ (неверный, истёкший или отозванный). "
+                         "Сгенерируйте новый: Settings → Personal API Token, и пришлите "
+                         "/garminkey НОВЫЙ_КЛЮЧ.",
         "garmin_linked_ok": "✅ Garmin связан (через сайт). Остался /login для OSM — или он тоже "
                             "уже сделан на сайте.",
         "cancel_done": "Ок, прервано.",
@@ -130,6 +141,7 @@ MESSAGES = {
         "help": (
             "Garmin → OSM: auto-uploads your rides (and more) to the map.\n"
             "/link — the linking site for Garmin and OSM (Telegram sign-in)\n"
+            "/garminkey KEY — link Garmin with a Personal API key (no site needed)\n"
             "/login — fallback: link OSM with a pasted browser code\n"
             "/status — state and settings\n"
             "/sync — scan Garmin and upload now\n"
@@ -153,6 +165,14 @@ MESSAGES = {
         "login_fail": "⚠️ Code exchange failed: {err}. /login to retry.",
         "link_site": "🔗 Open the linking site and sign in with Telegram:\n{url}\n"
                      "Link Garmin and OSM there; confirmations will arrive in this chat.",
+        "garminkey_usage": "🔑 Send your Personal API key in one message: /garminkey YOUR_KEY\n"
+                           "Create it in Garmin Connect: Settings → Personal API Token "
+                           "(https://connect.garmin.com/app/settings/personalApiToken) — choose the "
+                           "longest expiration. The message with the key is deleted right away.",
+        "garminkey_ok": "✅ Garmin linked via Personal API ({n} latest activities visible). "
+                        "/login for OSM remains — or it is already done on the site.",
+        "garminkey_bad": "⚠️ Garmin rejected the key (wrong, expired, or revoked). Generate a new "
+                         "one: Settings → Personal API Token, then send /garminkey NEW_KEY.",
         "garmin_linked_ok": "✅ Garmin linked (via the site). /login for OSM remains — or it is "
                             "already done on the site.",
         "cancel_done": "Done, aborted.",
