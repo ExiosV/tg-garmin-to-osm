@@ -273,7 +273,7 @@ def test_start_gives_onboarding(tmp_path):
     tg = _Tg()
     assert runner_mod._handle_message(c, tg, st, msg("/start")) is True
     text = tg.sent[0][1]
-    assert "/garmin" in text and "/login" in text and "iD" in text
+    assert "/link" in text and "iD" in text  # the RU onboarding points at /link, not a bare URL
     assert st.user(42)["chat_id"] == -1001  # the contact row appeared
 
 
@@ -314,76 +314,8 @@ def test_osm_login_flow(tmp_path, monkeypatch):
     assert any("OSM связан" in t for _, t in tg.sent)
 
 
-def test_garmin_link_flow_with_mfa(tmp_path, monkeypatch):
-    calls = []
-
-    def fake_begin(email, password):
-        calls.append((email, password))
-        if password == "secret12345":
-            return "needs_mfa", object(), '{"st": 1}'
-        return "ok", object(), None
-
-    def fake_finish(api, state_json, code, token_dir):
-        calls.append(("mfa", code, token_dir))
-
-    monkeypatch.setattr(runner_mod, "begin_login", fake_begin)
-    monkeypatch.setattr(runner_mod, "finish_mfa", fake_finish)
-    monkeypatch.setattr(runner_mod, "save_tokens", lambda api, d: None)
-    c = cfg(tmp_path, garmin_token_dir=str(tmp_path / "garmin"))
-    st = State(c.data_dir)
-    tg = _Tg()
-    assert runner_mod._handle_message(c, tg, st, msg("/garmin")) is True
-    assert runner_mod._handle_message(c, tg, st, msg("me@example.com")) is True
-    assert runner_mod._handle_message(c, tg, st, msg("secret12345")) is True
-    assert tg.deleted and tg.deleted[-1][0] == -1001  # the password message was deleted
-    assert st.user(42)["garmin_linked"] == 0
-    assert runner_mod._handle_message(c, tg, st, msg("123456")) is True
-    assert st.user(42)["garmin_linked"] == 1
-    assert calls[0] == ("me@example.com", "secret12345")
-    assert calls[1][1] == "123456" and str(tmp_path) in calls[1][2]
-    assert any("Garmin связан" in t for _, t in tg.sent)
-    assert PENDING.get(42) is None
 
 
-def test_garmin_link_clean_login(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner_mod, "begin_login", lambda e, p: ("ok", object(), None))
-    saved = {}
-    monkeypatch.setattr(runner_mod, "save_tokens", lambda api, d: saved.update(dir=d))
-    monkeypatch.setattr(runner_mod, "finish_mfa", lambda *a: None)
-    c = cfg(tmp_path, garmin_token_dir=str(tmp_path / "garmin"))
-    st = State(c.data_dir)
-    tg = _Tg()
-    runner_mod._handle_message(c, tg, st, msg("/garmin"))
-    runner_mod._handle_message(c, tg, st, msg("me@example.com"))
-    runner_mod._handle_message(c, tg, st, msg("pw12345678"))
-    assert st.user(42)["garmin_linked"] == 1
-    assert "42" in saved["dir"]  # per-user token directory
-
-
-def test_garmin_link_bad_password(tmp_path, monkeypatch):
-    def boom(email, password):
-        raise RuntimeError("Authentication failed")
-
-    monkeypatch.setattr(runner_mod, "begin_login", boom)
-    c = cfg(tmp_path)
-    st = State(c.data_dir)
-    tg = _Tg()
-    runner_mod._handle_message(c, tg, st, msg("/garmin"))
-    runner_mod._handle_message(c, tg, st, msg("me@example.com"))
-    runner_mod._handle_message(c, tg, st, msg("wrongpass123"))
-    assert st.user(42)["garmin_linked"] == 0
-    assert any("не принял" in t for _, t in tg.sent)
-    assert PENDING.get(42) is None  # the dialog ended
-
-
-def test_cancel_aborts_dialog(tmp_path):
-    c = cfg(tmp_path)
-    st = State(c.data_dir)
-    tg = _Tg()
-    runner_mod._handle_message(c, tg, st, msg("/garmin"))
-    assert runner_mod.pending_get(42) is not None
-    runner_mod._handle_message(c, tg, st, msg("/cancel"))
-    assert runner_mod.pending_get(42) is None
 
 
 def test_sync_command_needs_both_links(tmp_path, monkeypatch):
@@ -517,3 +449,58 @@ def test_user_cycle_first_scan_marks_backlog(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, "Osm", _Osm)
     res = user_cycle(c, _Tg(), st, u)
     assert res["seen"] == 1
+
+
+# -- /link and ingest ------------------------------------------------------------------------------------------------
+
+def test_link_command_sends_site(tmp_path):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    tg = _Tg()
+    assert runner_mod._handle_message(c, tg, st, msg("/link")) is True
+    chat, text = tg.sent[0]
+    assert "https://garmin-osm.exiosv.com" in text and "Telegram" in text
+
+
+def test_login_fallback_flow_still_works(tmp_path, monkeypatch):
+    from tg_garmin_to_osm import osm as osmmod
+
+    monkeypatch.setattr(osmmod, "exchange_code",
+                        lambda base, cid, sec, code: {"access_token": "TKN"} if code == "CODE"
+                        else (_ for _ in ()).throw(OsmError("token exchange failed", 400, "bad")))
+    monkeypatch.setattr(runner_mod, "Osm", _Osm)
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    tg = _Tg()
+    assert runner_mod._handle_message(c, tg, st, msg("/login")) is True
+    assert runner_mod._handle_message(c, tg, st, msg("CODE")) is True
+    assert st.user(42)["osm_access_token"] == "TKN"
+    assert runner_mod._handle_message(c, tg, st, msg("/cancel")) is True  # no dialog: friendly text
+
+
+def test_ingest_garmin_link_writes_tokens_and_notifies(tmp_path):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    link_user(st)
+    tg = _Tg()
+    tokens = '{"access": {"token": "x"}}'
+    runner_mod.ingest_garmin_link(c, tg, st, 42, tokens)
+    token_file = pathlib_path(c.garmin_token_dir) / "42" / "garmin_tokens.json"
+    assert token_file.read_text() == tokens
+    assert st.user(42)["garmin_linked"] == 1
+    assert any("Garmin связан" in t for _, t in tg.sent)
+
+
+def test_ingest_osm_link(tmp_path):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    link_user(st)
+    tg = _Tg()
+    runner_mod.ingest_osm_link(c, tg, st, 42, "OSMTKN", "mapper")
+    assert st.user(42)["osm_access_token"] == "OSMTKN" and st.user(42)["osm_name"] == "mapper"
+    assert any("OSM связан" in t and "mapper" in t for _, t in tg.sent)
+
+
+def pathlib_path(base):
+    import pathlib
+    return pathlib.Path(base).expanduser()

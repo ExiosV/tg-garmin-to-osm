@@ -16,10 +16,9 @@ MESSAGES = {
             "трек на OSM как GPS-трек — а затем присылает ссылку на трек и ссылку «править карту в "
             "iD по треку», чтобы вы могли обновлять дороги и покрытия там, где проехали.\n\n"
             "<b>Как начать</b>\n"
-            "1. /garmin — связать Garmin (понадобятся логин и пароль Garmin; если включена 2FA — код "
-            "пришлёте сюда же. Сообщения с паролем удаляются сразу, хранятся только токены)\n"
-            "2. /login — связать OSM (откройте ссылку, войдите, пришлите код со страницы)\n"
-            "3. Дальше всё автоматом: /status — состояние, /sync — загрузить сейчас\n\n"
+            "1. /link — откроете сайт привязки: войдите через Telegram и привяжите Garmin и OSM там "
+            "(в чат ничего вводить не нужно)\n"
+            "2. Дальше всё автоматом: /status — состояние, /sync — загрузить сейчас\n\n"
             "<b>Настройки</b>\n"
             "/types — какие активности загружать (по умолчанию только вело)\n"
             "/auto on|off — включить/выключить автозагрузку\n"
@@ -33,8 +32,8 @@ MESSAGES = {
         ),
         "help": (
             "Garmin → OSM: автозагрузка велотреков (и не только) на карту.\n"
-            "/garmin — связать Garmin (email → пароль → код 2FA, всё в чате)\n"
-            "/login — связать OSM (ссылка → код из браузера)\n"
+            "/link — сайт привязки Garmin и OSM (вход через Telegram)\n"
+            "/login — запасной вход в OSM кодом из браузера\n"
             "/status — состояние и настройки\n"
             "/sync — сканировать Garmin и загрузить сейчас\n"
             "/pending — треки в обработке и ошибки\n"
@@ -49,22 +48,16 @@ MESSAGES = {
             "/cancel — прервать текущий диалог (привязку)\n"
             "/help — это сообщение"
         ),
-        "login": "1. Откройте ссылку и авторизуйтесь:\n{url}\n"
-                 "2. Скопируйте код со страницы и пришлите его следующим сообщением.",
+        "login": "Запасной способ. 1. Откройте ссылку и авторизуйтесь:\n{url}\n"
+                 "2. Скопируйте код со страницы и пришлите его следующим сообщением. "
+                 "(Обычно проще: /link)",
         "login_no_client": "OSM-приложение не настроено на сервере.",
         "login_done": "✅ OSM связан: <b>{name}</b>. Теперь /sync или просто катайте.",
         "login_fail": "⚠️ Обмен кода не удался: {err}. /login — попробовать заново.",
-        "garmin_ask_email": "Пришлите email вашего аккаунта Garmin Connect (следующим сообщением). "
-                            "/cancel — отменить.",
-        "garmin_ask_password": "Теперь пришлите пароль Garmin. Сообщение будет удалено сразу, пароль "
-                               "нигде не сохраняется (только токены). /cancel — отменить.",
-        "garmin_ask_mfa": "Garmin запросил код 2FA — пришлите его следующим сообщением. /cancel — отменить.",
-        "garmin_linked_ok": "✅ Garmin связан. Токены сохранены; пароль больше не нужен. "
-                            "Остался /login для OSM — и всё поедет.",
-        "garmin_fail": "⚠️ Garmin не принял вход (неверный email/пароль, блокировка или временная "
-                       "ошибка). Попробуйте ещё раз: /garmin.",
-        "garmin_mfa_fail": "⚠️ Код 2FA не принят. /garmin — начать заново.",
-        "garmin_timeout": "⏳ Диалог привязки прерван по таймауту. /garmin — начать заново.",
+        "link_site": "🔗 Откройте сайт привязки и войдите через Telegram:\n{url}\n"
+                     "Там же привязываются Garmin и OSM; подтверждения придут сюда.",
+        "garmin_linked_ok": "✅ Garmin связан (через сайт). Остался /login для OSM — или он тоже "
+                            "уже сделан на сайте.",
         "cancel_done": "Ок, прервано.",
         "status": "🚴 tg-garmin-to-osm\n"
                   "Garmin: {garmin} · OSM: {osm}\n"
@@ -120,11 +113,9 @@ MESSAGES = {
             "\"edit the map in iD against this trace\" link, so you can improve roads and surfaces "
             "where you actually rode.\n\n"
             "<b>Getting started</b>\n"
-            "1. /garmin — link Garmin (you will send your Garmin email and password here; if 2FA is "
-            "on you will also send the code. The messages are deleted immediately, only tokens are "
-            "stored)\n"
-            "2. /login — link OSM (open the link, sign in, paste the code from the page)\n"
-            "3. Then it just works: /status for state, /sync to upload now\n\n"
+            "1. /link — open the linking site: sign in with Telegram there, then link Garmin and "
+            "OSM (nothing needs to be typed in this chat)\n"
+            "2. Then it just works: /status for state, /sync to upload now\n\n"
             "<b>Settings</b>\n"
             "/types — which activities to upload (bike rides only by default)\n"
             "/auto on|off — turn auto-upload on/off\n"
@@ -138,8 +129,8 @@ MESSAGES = {
         ),
         "help": (
             "Garmin → OSM: auto-uploads your rides (and more) to the map.\n"
-            "/garmin — link Garmin (email → password → 2FA code, all in this chat)\n"
-            "/login — link OSM (link → code from the browser)\n"
+            "/link — the linking site for Garmin and OSM (Telegram sign-in)\n"
+            "/login — fallback: link OSM with a pasted browser code\n"
             "/status — state and settings\n"
             "/sync — scan Garmin and upload now\n"
             "/pending — traces processing and errors\n"
@@ -154,23 +145,16 @@ MESSAGES = {
             "/cancel — abort the current dialog (linking)\n"
             "/help — this message"
         ),
-        "login": "1. Open the link and authorize:\n{url}\n"
-                 "2. Copy the code from the page and send it as your next message.",
+        "login": "Fallback route. 1. Open the link and authorize:\n{url}\n"
+                 "2. Copy the code from the page and send it as your next message. "
+                 "(Usually easier: /link)",
         "login_no_client": "The OSM application is not configured on the server.",
         "login_done": "✅ OSM linked: <b>{name}</b>. Now /sync or just go ride.",
         "login_fail": "⚠️ Code exchange failed: {err}. /login to retry.",
-        "garmin_ask_email": "Send the email of your Garmin Connect account (as the next message). "
-                            "/cancel to abort.",
-        "garmin_ask_password": "Now send your Garmin password. The message will be deleted "
-                               "immediately and the password is never stored (only tokens). "
-                               "/cancel to abort.",
-        "garmin_ask_mfa": "Garmin asked for a 2FA code — send it as the next message. /cancel to abort.",
-        "garmin_linked_ok": "✅ Garmin linked. Tokens are saved; the password is not needed anymore. "
-                            "/login for OSM is the last step.",
-        "garmin_fail": "⚠️ Garmin rejected the login (wrong email/password, a block, or a temporary "
-                       "error). Try again: /garmin.",
-        "garmin_mfa_fail": "⚠️ The 2FA code was not accepted. /garmin to start over.",
-        "garmin_timeout": "⏳ The linking dialog timed out. /garmin to start again.",
+        "link_site": "🔗 Open the linking site and sign in with Telegram:\n{url}\n"
+                     "Link Garmin and OSM there; confirmations will arrive in this chat.",
+        "garmin_linked_ok": "✅ Garmin linked (via the site). /login for OSM remains — or it is "
+                            "already done on the site.",
         "cancel_done": "Done, aborted.",
         "status": "🚴 tg-garmin-to-osm\n"
                   "Garmin: {garmin} · OSM: {osm}\n"

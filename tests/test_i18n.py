@@ -31,7 +31,7 @@ def test_text_prefers_stored_language_then_client_code_then_english():
 def test_start_mentions_linking_steps_both_languages():
     for lang in (i18n.RU, i18n.EN):
         s = i18n.text(lang, "start")
-        assert "/garmin" in s and "/login" in s and "iD" in s
+        assert "/link" in s and "iD" in s  # /login is a fallback documented in /help, not in /start
 
 
 def test_typo_is_dead():

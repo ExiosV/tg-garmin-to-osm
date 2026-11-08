@@ -4,10 +4,11 @@ import sys
 
 from .backfill import run_backfill
 from .config import Config
+from .ingest import serve as serve_ingest
 from .garmin import GarminClient, user_token_dir
 from .osm import Osm, OsmError
 from .redact import redact
-from .runner import cycle, handle_updates, run_forever
+from .runner import cycle, handle_updates, ingest_garmin_link, ingest_osm_link, run_forever
 from .state import State
 from .telegram import Telegram
 
@@ -87,6 +88,11 @@ def main() -> None:
         if cmd == "backfill":
             run_backfill(cfg, tg, state, args.since, args.dry_run, args.user)
             return
+        if cfg.ingest_token:
+            serve_ingest(cfg.ingest_port, cfg.ingest_token,
+                         lambda uid, tokens: ingest_garmin_link(cfg, tg, state, uid, tokens),
+                         lambda uid, token, name: ingest_osm_link(cfg, tg, state, uid, token, name))
+            log.info("ingest API listening on :%s", cfg.ingest_port)
         run_forever(cfg, tg, state)
     except Exception as e:  # no raw traceback: exception text can contain a token or a password
         log.error("fatal: %s", redact(e))

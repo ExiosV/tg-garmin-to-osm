@@ -1,14 +1,14 @@
 import calendar
 import html
 import logging
+import os
 import time
 
 from . import gpx as gpxmod
 from . import i18n
 from . import osm as osmmod
 from .config import TYPE_GROUPS, Config, VISIBILITIES, expand_types
-from .garmin import (GarminClient, begin_login, course_id, finish_mfa, is_auth_error,
-                     save_tokens, user_token_dir)
+from .garmin import GarminClient, course_id, is_auth_error, user_token_dir
 from .osm import Osm, OsmError
 from .redact import redact
 from .state import State
@@ -18,8 +18,8 @@ log = logging.getLogger("tg_garmin_to_osm")
 
 MAX_ATTEMPTS = 3  # permanent OSM-side upload rejections before a ride goes to 'failed'
 
-# In-memory linking dialogs (Garmin email/password/MFA, per Telegram user). Passwords live here for
-# seconds and are never persisted; a restart drops the dialog, the user just starts over.
+# In-memory dialog for the /login out-of-band code (per Telegram user). Account linking itself
+# happens on the web site (garmin-osm.exiosv.com), which delivers tokens to the ingest API.
 PENDING: dict = {}
 
 
@@ -240,14 +240,43 @@ def cycle(cfg: Config, tg: Telegram, state: State) -> list:
     return results
 
 
-# -- Garmin linking dialog ------------------------------------------------------------------------------------------
+# -- linking ---------------------------------------------------------------------------------------------------------
+
+def ingest_garmin_link(cfg: Config, tg: Telegram, state: State, uid: int, tokens: str) -> None:
+    """Ingest callback: the web site completed a Garmin login and sends the token store over."""
+    d = user_token_dir(cfg.garmin_token_dir, uid)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "garmin_tokens.json"), "w") as f:
+        f.write(tokens)
+    os.chmod(os.path.join(d, "garmin_tokens.json"), 0o600)
+    state.set_garmin_linked(uid, True)
+    user = state.user(uid)
+    if user and user["chat_id"]:
+        try:
+            tg.send(user["chat_id"], i18n.text(user_lang(user), "garmin_linked_ok"))
+        except Exception as e:
+            log.warning("ingest notify failed: %s", redact(e))
+    log.info("user %s: Garmin tokens ingested from the web site", uid)
+
+
+def ingest_osm_link(cfg: Config, tg: Telegram, state: State, uid: int, access_token: str,
+                    name: str) -> None:
+    """Ingest callback: the web site completed the OSM OAuth redirect flow."""
+    user = state.user(uid)
+    chat_id = user["chat_id"] if user else uid  # private chats: chat id == user id
+    state.save_osm_user(uid, chat_id, access_token, name)
+    try:
+        tg.send(chat_id, i18n.text(user_lang(user or {}), "login_done", name=html.escape(name)))
+    except Exception as e:
+        log.warning("ingest notify failed: %s", redact(e))
+    log.info("user %s: OSM token ingested from the web site", uid)
+
 
 def _pending_flow(cfg: Config, tg: Telegram, state: State, msg: dict, uid: int, text: str) -> bool:
-    """Drive an in-progress linking dialog (Garmin email/password/MFA, OSM code). Returns True if consumed."""
+    """Drive the /login out-of-band code dialog (the only in-chat dialog left). Returns True if consumed."""
     p = pending_get(uid)
     if not p:
         return False
-    chat_id = (msg.get("chat") or {}).get("id")
     lang = (state.user(uid) or {}).get("lang") or ""
     if text.startswith("/cancel"):
         PENDING.pop(uid, None)
@@ -256,40 +285,6 @@ def _pending_flow(cfg: Config, tg: Telegram, state: State, msg: dict, uid: int, 
     if p["stage"] == "osm_code":
         PENDING.pop(uid, None)
         _osm_link(cfg, tg, state, msg, uid, text)
-        return True
-    if p["stage"] == "email":
-        PENDING[uid] = {**p, "stage": "password", "email": text, "ts": time.time()}
-        tg.reply_msg(msg, i18n.text(lang, "garmin_ask_password"))
-        return True
-    if p["stage"] == "password":
-        email = p["email"]
-        PENDING.pop(uid, None)
-        # the credentials message disappears at once; nothing is logged or stored
-        tg.delete(chat_id, msg.get("message_id"))
-        try:
-            status, api, client_state = begin_login(email, text)
-        except Exception as e:  # never surface the exception: it can carry account details
-            log.error("garmin login failed for user %s: %s", uid, type(e).__name__)
-            tg.reply_msg(msg, i18n.text(lang, "garmin_fail"))
-            return True
-        if status == "needs_mfa":
-            PENDING[uid] = {"stage": "mfa", "api": api, "client_state": client_state, "ts": time.time()}
-            tg.reply_msg(msg, i18n.text(lang, "garmin_ask_mfa"))
-        else:
-            save_tokens(api, user_token_dir(cfg.garmin_token_dir, uid))
-            state.set_garmin_linked(uid, True)
-            tg.reply_msg(msg, i18n.text(lang, "garmin_linked_ok"))
-        return True
-    if p["stage"] == "mfa":
-        PENDING.pop(uid, None)
-        try:
-            finish_mfa(p["api"], p["client_state"], text, user_token_dir(cfg.garmin_token_dir, uid))
-        except Exception as e:
-            log.error("garmin mfa failed for user %s: %s", uid, type(e).__name__)
-            tg.reply_msg(msg, i18n.text(lang, "garmin_mfa_fail"))
-            return True
-        state.set_garmin_linked(uid, True)
-        tg.reply_msg(msg, i18n.text(lang, "garmin_linked_ok"))
         return True
     return False
 
@@ -323,7 +318,7 @@ def _status_text(cfg: Config, state: State, user: dict, T) -> str:
     counts = ", ".join(f"{k}: {v}" for k, v in sorted(state.counts(user["user_id"]).items())) or "—"
     last_scan = state.get_meta("last_scan_ts")
     scan = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(int(last_scan))) if last_scan else "—"
-    return T("status", garmin="✅" if user["garmin_linked"] else "— /garmin",
+    return T("status", garmin="✅" if user["garmin_linked"] else "— /link",
              osm=html.escape(user["osm_name"]) if user["osm_name"] else "— /login",
              auto="on" if user["auto"] else "off",
              types=user.get("types") or cfg.default_types,
@@ -345,9 +340,8 @@ def _handle_command(cfg: Config, tg: Telegram, state: State, msg: dict, cmd: str
         tg.reply_msg(msg, T("start"))
     elif cmd == "/help":
         tg.reply_msg(msg, T("help"))
-    elif cmd == "/garmin":
-        PENDING[uid] = {"stage": "email", "ts": time.time()}
-        tg.reply_msg(msg, T("garmin_ask_email"))
+    elif cmd == "/link":
+        tg.reply_msg(msg, T("link_site", url=cfg.link_site))
     elif cmd == "/login":
         if not cfg.osm_client_id:
             tg.reply_msg(msg, T("login_no_client"))

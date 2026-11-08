@@ -79,6 +79,9 @@ class Config:
     trace_tags: str = "bike"
     scan_page: int = 10              # activities fetched per user per scan (newest first)
     default_types: str = DEFAULT_TYPES
+    ingest_token: str = ""           # bearer for the cluster-internal ingest API (the web site relays links here)
+    ingest_port: int = 8080
+    link_site: str = "https://garmin-osm.exiosv.com"  # where users link their accounts
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -101,9 +104,13 @@ class Config:
             trace_tags=e("TRACE_TAGS", "bike"),
             scan_page=int(e("SCAN_PAGE", "10")),
             default_types=parse_types_setting(e("DEFAULT_TYPES", DEFAULT_TYPES)),
+            ingest_token=e("INGEST_TOKEN", ""),
+            ingest_port=int(e("INGEST_PORT", "8080")),
+            link_site=e("LINK_SITE", "https://garmin-osm.exiosv.com").rstrip("/"),
         )
         # Exception text can carry any of these; register them before anything logs.
         redact.add_secret(cfg.token)
         redact.add_secret(cfg.osm_client_secret)
         redact.add_secret(cfg.garmin_password)
+        redact.add_secret(cfg.ingest_token)
         return cfg
