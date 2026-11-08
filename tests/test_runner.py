@@ -715,3 +715,14 @@ def test_guide_sends_real_images_when_present(tmp_path, monkeypatch):
     runner_mod._send_guide(c, tg, -1001, "en")
     assert tg.photos and tg.photos[0][1] == "step1.png"      # the image was sent from assets
     assert tg.photos[0][2] == b"PNG-bytes"
+
+
+def test_handle_updates_dispatches_callbacks(tmp_path):
+    import tg_garmin_to_osm.onboarding as onb
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    tg = _Tg()
+    tg.updates_result = [{"update_id": 30, "callback_query": cb(onb.CB_GARMIN_START)}]
+    assert handle_updates(c, tg, st) == 1
+    assert any("personalApiToken" in t for _, t in tg.sent)
+    assert st.get_meta("updates_offset") == "31"

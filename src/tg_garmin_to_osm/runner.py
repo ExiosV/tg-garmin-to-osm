@@ -612,6 +612,12 @@ def handle_updates(cfg: Config, tg: Telegram, state: State, wait: int = 25) -> i
     handled = 0
     for update in updates:
         offset = max(offset, int(update.get("update_id") or 0)) + 1
+        if update.get("callback_query"):  # onboarding dialog button press
+            try:
+                handled += 1 if _handle_callback(cfg, tg, state, update["callback_query"]) else 0
+            except Exception as e:  # one bad button must not stall the service
+                log.error("callback handling failed: %s", redact(e))
+            continue
         msg = update.get("message") or {}
         try:
             handled += 1 if _handle_message(cfg, tg, state, msg) else 0
