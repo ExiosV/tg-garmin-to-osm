@@ -479,7 +479,7 @@ def handle_updates(cfg: Config, tg: Telegram, state: State, wait: int = 25) -> i
         # from (e.g. a token swap on an existing database) — resync, or every poll re-processes
         log.warning("stored updates_offset %s is beyond the server queue (max %s): resyncing",
                     offset, max(ids))
-        offset = max(ids) + 1
+        offset = max(ids) - 1  # the per-update loop re-adds the +1
     handled = 0
     for update in updates:
         offset = max(offset, int(update.get("update_id") or 0)) + 1
