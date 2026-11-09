@@ -179,6 +179,22 @@ def test_accounts_osm_update_existing(tmp_path):
         server.shutdown()
 
 
+def test_accounts_osm_after_osm_unlink_reuses_row(tmp_path):
+    c, st, runner, server, port = make_test_server(tmp_path)
+    try:
+        post(port, "/api/accounts/osm", "SECRETTOKEN1",
+             {"osm_uid": 777, "osm_name": "m", "access_token": "T1", "lang": "en"})
+        code, _ = post(port, "/api/users/-777/unlink", "SECRETTOKEN1", {"what": "osm"})
+        assert code == 200 and st.user(-777)["osm_uid"] is None
+        code, body = post(port, "/api/accounts/osm", "SECRETTOKEN1",
+                          {"osm_uid": 777, "osm_name": "m", "access_token": "T2", "lang": "en"})
+        assert code == 200 and body == {"uid": -777, "created": False}
+        u = st.user(-777)
+        assert u["osm_uid"] == 777 and u["osm_access_token"] == "T2"
+    finally:
+        server.shutdown()
+
+
 def test_accounts_osm_signup_closed(tmp_path):
     c = Config(token="", ingest_token="SECRETTOKEN1", data_dir=str(tmp_path), ingest_port=0,
                garmin_token_dir=str(tmp_path / "garmin_tokens"),

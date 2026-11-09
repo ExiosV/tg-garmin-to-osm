@@ -158,7 +158,8 @@ class ApiHandler(BaseHTTPRequestHandler):
         if lang not in ("en", "ru"):
             lang = "en"
 
-        existing = self.state.find_by_osm_uid(osm_uid)
+        # A web user who unlinked OSM keeps the row -osm_uid with osm_uid NULL: same OSM account, reuse it.
+        existing = self.state.find_by_osm_uid(osm_uid) or self.state.user(-osm_uid)
         if existing:  # token + name only: the user's language stays as it is
             self.state.save_osm_user(existing["user_id"], existing["chat_id"], access_token, osm_name, osm_uid)
             return self._reply(200, {"uid": existing["user_id"], "created": False})
@@ -168,9 +169,6 @@ class ApiHandler(BaseHTTPRequestHandler):
             return self._reply(403, {"error": "signup_closed"})
 
         uid = -osm_uid
-        # ensure no collision (should not happen, but be safe)
-        if self.state.user(uid):
-            return self._reply(409, {"error": "uid_collision"})
 
         chat_id = None
         self.state.touch_user(uid, chat_id, lang)
