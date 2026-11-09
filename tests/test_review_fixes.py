@@ -380,3 +380,86 @@ def test_link_points_at_telegram_page(tmp_path):
                                             "from": {"id": 42, "language_code": "ru"},
                                             "message": {"chat": {"id": -1001, "type": "private"}}})
     assert "https://garmin-osm.exiosv.com/ru/telegram" in tg.sent[-1][1]
+
+
+# -- round 3 -------------------------------------------------------------------------------------------------------
+
+def test_non_ascii_authorization_header_is_401(tmp_path):
+    import http.client
+    c, st, runner, server, port = start(tmp_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.putrequest("GET", "/api/users/42")
+        conn.putheader("Authorization", "Bearer ключ".encode("utf-8"))
+        conn.endheaders()
+        resp = conn.getresponse()
+        assert resp.status == 401 and json.load(resp) == {"error": "unauthorized"}
+        conn.close()
+        assert urllib.request.urlopen(f"http://127.0.0.1:{port}/ping", timeout=5).status == 200
+    finally:
+        server.shutdown()
+
+
+class _RejectingApi:
+    def __init__(self, key):
+        self.key = key
+
+    def recent_activities(self, limit=3):
+        from tg_garmin_to_osm.garmin_api import GarminApiError
+        raise GarminApiError("api key exchange failed", 401, "")
+
+
+def test_bad_new_key_keeps_working_key(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    link_user(st, garmin=False)
+    st.set_garmin_key(42, "GOODKEY12345")
+    st.set_garmin_owner(42, "7", "Rider")
+    monkeypatch.setattr(runner_mod, "GarminApiClient", _RejectingApi)
+    ok, name, err, n = runner_mod.apply_garmin_key_pure(c, st, 42, "TYPOKEY12345")
+    assert (ok, name, err, n) == (False, None, "bad_key", 0)
+    u = st.user(42)
+    assert u["garmin_api_key"] == "GOODKEY12345" and u["garmin_linked"] == 1
+    assert u["garmin_name"] == "Rider"
+
+
+def test_bad_key_without_link_stays_unlinked(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    link_user(st, garmin=False)
+    monkeypatch.setattr(runner_mod, "GarminApiClient", _RejectingApi)
+    ok, _, err, _ = runner_mod.apply_garmin_key_pure(c, st, 42, "TYPOKEY12345")
+    assert (ok, err) == (False, "bad_key")
+    u = st.user(42)
+    assert u["garmin_linked"] == 0 and u["garmin_api_key"] is None
+
+
+def test_settings_bad_field_changes_nothing(tmp_path):
+    c, st, runner, server, port = start(tmp_path)
+    link_user(st, auto="1", types="bike")
+    try:
+        code, body = call(port, "POST", "/api/users/42/settings", {"auto": False, "types": ""})
+        assert (code, body) == (400, {"error": "bad_types"})
+        code, body = call(port, "POST", "/api/users/42/settings", {"auto": False, "lang": "fr"})
+        assert (code, body) == (400, {"error": "bad_lang"})
+        u = st.user(42)
+        assert u["auto"] == 1 and u["types"] == "bike" and u["lang"] == "ru"
+    finally:
+        server.shutdown()
+
+
+def test_unlink_garmin_resets_first_scan_and_failing(tmp_path):
+    c = cfg(tmp_path)
+    st = State(c.data_dir)
+    u = link_user(st)
+    garmin = _Garmin()
+    runner_mod.scan_activities(c, garmin, st, u)          # init done
+    st.set_meta("garmin_fail:42", "2026-11-09")
+    st.set_meta("garmin_fail:420", "keep")                # another user's key is not touched
+    st.unlink_garmin(42)
+    assert st.get_meta("init:42") is None and st.get_meta("garmin_fail:42") is None
+    assert st.get_meta("garmin_fail:420") == "keep"
+    st.set_garmin_linked(42, True)                        # a new Garmin account
+    garmin.activities = [act(1), act(2)]
+    runner_mod.scan_activities(c, garmin, st, st.user(42))
+    assert st.counts(42) == {"backlog": 2}                # old history is backlog, not uploaded

@@ -311,34 +311,27 @@ def cycle(cfg: Config, tg: Telegram | None, state: State) -> list:
 # -- linking ---------------------------------------------------------------------------------------------------------
 
 def apply_garmin_key_pure(cfg: Config, state: State, uid: int, key: str) -> tuple[bool, str | None, str | None, int]:
-    """Pure function: store key, verify with recent_activities(3), store garmin_owner_id/garmin_name
-    from ownerId/ownerDisplayName of the first activity if present, unlink on failure.
+    """Verify a Personal API key with recent_activities(3); only a working key is stored, with
+    garmin_owner_id/garmin_name from ownerId/ownerDisplayName of the first activity (NULL when absent).
+    A failed check leaves the stored key and link alone (a typo or an outage must not unlink).
     Returns (ok, garmin_name_or_none, error_code_or_none, activity_count).
     error_code: 'bad_key' for 401/403 from token exchange, 'garmin_unavailable' for network/5xx."""
-    state.set_garmin_key(uid, key)
     add_secret(key)
     try:
-        garmin = GarminApiClient(key)
-        acts = garmin.recent_activities(3)
-        garmin_name = None
-        owner_id = None
-        if acts:
-            first = acts[0]
-            owner_id = str(first.get("ownerId") or "")
-            garmin_name = str(first.get("ownerDisplayName") or "")
-        if garmin_name or owner_id:
-            state.set_garmin_owner(uid, owner_id or None, garmin_name or None)
-        state.delete_meta(f"garmin_fail:{uid}")  # a fresh, working key
-        return True, garmin_name or None, None, len(acts)
+        acts = GarminApiClient(key).recent_activities(3) or []
     except GarminApiError as e:
-        state.unlink_garmin(uid)
-        if e.status in (401, 403):
-            return False, None, "bad_key", 0
-        return False, None, "garmin_unavailable", 0
+        log.warning("garmin key check failed: %s", redact(e))
+        return False, None, ("bad_key" if e.status in (401, 403) else "garmin_unavailable"), 0
     except Exception as e:
-        state.unlink_garmin(uid)
         log.error("garmin key check failed: %s", redact(e))
         return False, None, "garmin_unavailable", 0
+    first = acts[0] if acts else {}
+    owner_id = str(first.get("ownerId") or "") or None
+    garmin_name = str(first.get("ownerDisplayName") or "") or None
+    state.set_garmin_key(uid, key)
+    state.set_garmin_owner(uid, owner_id, garmin_name)  # a new key may be another Garmin account
+    state.delete_meta(f"garmin_fail:{uid}")  # a fresh, working key
+    return True, garmin_name, None, len(acts)
 
 
 def apply_garmin_key(cfg: Config, tg: Telegram, state: State, uid: int, key: str) -> None:

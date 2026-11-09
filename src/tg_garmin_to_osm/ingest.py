@@ -47,8 +47,13 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _authorized(self) -> bool:
-        header = self.headers.get("Authorization") or ""
-        return bool(self.cfg.ingest_token) and hmac.compare_digest(header, f"Bearer {self.cfg.ingest_token}")
+        if not self.cfg.ingest_token:
+            return False
+        try:  # bytes: compare_digest on str raises TypeError for non-ASCII input
+            header = (self.headers.get("Authorization") or "").encode()
+            return hmac.compare_digest(header, f"Bearer {self.cfg.ingest_token}".encode())
+        except Exception:
+            return False
 
     def _get_json(self) -> dict | None:
         try:
@@ -230,25 +235,29 @@ class ApiHandler(BaseHTTPRequestHandler):
         return self._reply(200, {"ok": True, "garmin_name": garmin_name})
 
     def _handle_settings(self, uid: int, body: dict) -> None:
-        # allowed: auto (bool), types (str), visibility (str), lang (en|ru)
+        # validate every field first, then write: a bad field changes nothing
+        changes = {}
         if "auto" in body:
-            val = "1" if body["auto"] else "0"
-            self.state.set_setting(uid, "auto", val)
+            if not isinstance(body["auto"], bool):
+                return self._reply(400, {"error": "bad_auto"})
+            changes["auto"] = "1" if body["auto"] else "0"
         if "types" in body:
-            val = str(body["types"]).strip().lower()
+            val = str(body["types"] or "").strip().lower()
             if not val:
                 return self._reply(400, {"error": "bad_types"})
-            self.state.set_setting(uid, "types", val)
+            changes["types"] = val
         if "visibility" in body:
-            val = str(body["visibility"]).strip().lower()
+            val = str(body["visibility"] or "").strip().lower()
             if val not in VISIBILITIES:
                 return self._reply(400, {"error": "bad_visibility"})
-            self.state.set_setting(uid, "visibility", val)
+            changes["visibility"] = val
         if "lang" in body:
-            val = str(body["lang"]).strip().lower()
+            val = str(body["lang"] or "").strip().lower()
             if val not in ("en", "ru"):
                 return self._reply(400, {"error": "bad_lang"})
-            self.state.set_setting(uid, "lang", val)
+            changes["lang"] = val
+        for column, val in changes.items():
+            self.state.set_setting(uid, column, val)
         return self._reply(200, {"ok": True})
 
     def _handle_sync(self, uid: int) -> None:

@@ -555,7 +555,8 @@ def test_garminkey_bad_key_unlinks(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, "GarminApiClient", _Boom)
     monkeypatch.setattr(runner_mod.Osm, "user_name", lambda self: "")
     runner_mod._handle_command(c, tg, st, msg("/garminkey BADKEY123456"), "/garminkey", "BADKEY123456")
-    assert st.user(42)["garmin_linked"] == 0
+    assert st.user(42)["garmin_linked"] == 1  # the existing link survives a rejected key
+    assert st.user(42)["garmin_api_key"] is None
     assert any("не принял" in t or "rejected" in t for _, t in tg.sent)
 
 

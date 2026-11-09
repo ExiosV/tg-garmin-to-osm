@@ -115,7 +115,7 @@ def test_apply_garmin_key_pure_bad_key(tmp_path, monkeypatch):
     assert ok is False
     assert err == "bad_key"
     u = st.user(42)
-    assert u["garmin_linked"] == 0
+    assert u["garmin_linked"] == 1  # the existing link is kept
     assert u["garmin_api_key"] is None
 
 
@@ -135,7 +135,7 @@ def test_apply_garmin_key_pure_garmin_unavailable(tmp_path, monkeypatch):
     assert ok is False
     assert err == "garmin_unavailable"
     u = st.user(42)
-    assert u["garmin_linked"] == 0
+    assert u["garmin_linked"] == 1  # an outage does not unlink
 
 
 # -- POST /api/accounts/osm --------------------------------------------------------
@@ -346,7 +346,7 @@ def test_garmin_key_bad_key(tmp_path, monkeypatch):
         assert body["ok"] is False
         assert body["error"] == "bad_key"
         u = st.user(42)
-        assert u["garmin_linked"] == 0
+        assert u["garmin_linked"] == 1  # the existing link is kept
     finally:
         server.shutdown()
 

@@ -148,6 +148,8 @@ class State:
             self.db.execute(
                 "UPDATE users SET garmin_linked=0, garmin_api_key=NULL, garmin_owner_id=NULL, garmin_name=NULL WHERE user_id=?", (int(user_id),)
             )
+            # a later link may be another Garmin account: its first scan gets the backlog treatment again
+            self.db.execute("DELETE FROM meta WHERE k IN (?, ?)", (f"init:{user_id}", f"garmin_fail:{user_id}"))
             self.db.commit()
 
     def set_garmin_key(self, user_id: int, api_key: str) -> None:
