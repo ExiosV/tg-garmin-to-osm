@@ -28,7 +28,10 @@ def seeded_history(tmp_path, monkeypatch, history, existing_traces=()):
             return list(self.traces)
 
     monkeypatch.setattr(bf, "Osm", lambda base, token: _OsmList(base, token))
-    monkeypatch.setattr(bf, "GarminClient", lambda token_dir: garmin)
+    # backfill uses garmin_client_for which dispatches to GarminClient or GarminApiClient
+    import tg_garmin_to_osm.runner as runner_mod
+    monkeypatch.setattr(runner_mod, "GarminClient", lambda token_dir: garmin)
+    monkeypatch.setattr(runner_mod, "GarminApiClient", lambda key: garmin)
     monkeypatch.setattr(bf.time, "sleep", lambda s: None)
     return c, st, garmin, tg, u
 

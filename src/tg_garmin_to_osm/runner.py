@@ -2,6 +2,7 @@ import calendar
 import html
 import logging
 import os
+import threading
 import time
 
 from . import gpx as gpxmod
@@ -94,8 +95,7 @@ def scan_activities(cfg: Config, garmin: GarminClient, state: State, user: dict)
     Activities matching the user's types become 'new' (uploaded once the UPLOAD_DELAY window
     passes), everything else 'ignored' (/upload can still push it). On the very first scan after
     linking, the whole backlog is marked 'backlog': nothing old is uploaded en masse, but
-    /upload <id> works for it. Returns the number of new rows.
-    """
+    /upload <id> works for it. Returns the number of new rows."""
     uid = user["user_id"]
     first = state.get_meta(f"init:{uid}") is None
     types = expand_types_user(user, cfg)
@@ -112,6 +112,23 @@ def scan_activities(cfg: Config, garmin: GarminClient, state: State, user: dict)
             log.info("user %s: seen activity %s (%s, %s) -> %s", uid, aid, row["type"], row["name"], status)
     state.set_meta(f"init:{uid}", "1")
     return added
+
+
+# -- notification helper --------------------------------------------------------------------------------------------
+
+def _notify(cfg: Config, tg: Telegram, state: State, user: dict, kind: str, data: dict,
+            tg_text_key: str = "", tg_fmt: dict | None = None) -> None:
+    """Write an event row; send Telegram only when chat_id is set and Telegram is on (token non-empty).
+    tg_text_key/tg_fmt are the i18n key and format args for the Telegram message (if sent)."""
+    state.add_event(user["user_id"], kind, data)
+    chat_id = user.get("chat_id")
+    if chat_id and cfg.token:
+        try:
+            lang = user_lang(user)
+            text = i18n.text(lang, tg_text_key, **(tg_fmt or {}))
+            tg.send(chat_id, text, silent=True)
+        except Exception as e:
+            log.warning("notify telegram failed for user %s: %s", user["user_id"], redact(e))
 
 
 # -- upload --------------------------------------------------------------------------------------------------------
@@ -152,18 +169,23 @@ def upload_one(cfg: Config, garmin: GarminClient, osm: Osm, state: State, user: 
     except OsmError as e:
         status = _fail_osm(state, user, row, e)
         if e.status == 401:
-            tg.send(user["chat_id"], i18n.text(lang, "osm_401", lang), silent=True)
+            _notify(cfg, tg, state, user, "osm_unauthorized", {},
+                    "osm_401", {"lang": lang})
         elif status == "failed":
-            tg.send(user["chat_id"], i18n.text(lang, "upload_failed_final", lang,
-                                               name=html.escape(row["name"] or aid),
-                                               n=MAX_ATTEMPTS, err=redact(e)), silent=True)
+            _notify(cfg, tg, state, user, "upload_failed",
+                    {"activity_id": aid, "name": row["name"] or aid, "error": redact(e)},
+                    "upload_failed_final", {"lang": lang, "name": html.escape(row["name"] or aid),
+                                            "n": MAX_ATTEMPTS, "err": redact(e)})
         return 0
     state.set_status(uid, aid, "uploaded", trace_id)
     log.info("user %s: uploaded activity %s as OSM trace %s", uid, aid, trace_id)
     if notify:
-        tg.send(user["chat_id"], i18n.text(lang, "uploaded", lang, desc=html.escape(desc),
-                                           url=html.escape(osmmod.trace_link(cfg.osm_base, trace_id, osm_name)),
-                                           id=trace_id, vis=vis))
+        _notify(cfg, tg, state, user, "uploaded",
+                {"activity_id": aid, "name": row["name"], "trace_id": trace_id,
+                 "trace_url": osmmod.trace_link(cfg.osm_base, trace_id, osm_name)},
+                "uploaded", {"lang": lang, "desc": html.escape(desc),
+                             "url": html.escape(osmmod.trace_link(cfg.osm_base, trace_id, osm_name)),
+                             "id": trace_id, "vis": vis})
     return trace_id
 
 
@@ -174,10 +196,8 @@ def _notify_garmin_expired(cfg: Config, tg: Telegram, state: State, user: dict) 
     if state.get_meta(f"garmin_fail:{uid}") == today:
         return
     state.set_meta(f"garmin_fail:{uid}", today)
-    try:
-        tg.send(user["chat_id"], i18n.text(user_lang(user), "garmin_expired"), silent=True)
-    except Exception:
-        pass
+    _notify(cfg, tg, state, user, "garmin_expired", {},
+            "garmin_expired", {"lang": user_lang(user)})
 
 
 def upload_ready(cfg: Config, garmin: GarminClient, tg: Telegram, state: State, user: dict) -> int:
@@ -211,7 +231,11 @@ def check_pending(cfg: Config, tg: Telegram, state: State, user: dict) -> int:
         done += 1
         link = osmmod.edit_link(cfg.osm_base, row["trace_id"], meta["lat"], meta["lon"], osm_name)
         log.info("trace %s processed (user %s)", row["trace_id"], user["user_id"])
-        tg.send(user["chat_id"], i18n.text(lang, "processed", url=html.escape(link), id=row["trace_id"]))
+        _notify(cfg, tg, state, user, "processed",
+                {"activity_id": row["activity_id"], "name": row["name"],
+                 "trace_id": row["trace_id"], "trace_url": osmmod.trace_link(cfg.osm_base, row["trace_id"], osm_name),
+                 "edit_url": link},
+                "processed", {"lang": lang, "url": html.escape(link), "id": row["trace_id"]})
     return done
 
 
@@ -253,19 +277,47 @@ def cycle(cfg: Config, tg: Telegram, state: State) -> list:
 
 # -- linking ---------------------------------------------------------------------------------------------------------
 
-def apply_garmin_key(cfg: Config, tg: Telegram, state: State, uid: int, key: str) -> None:
-    """Store a Personal API key (from the dialog or /garminkey), verify it live, reply."""
+def apply_garmin_key_pure(cfg: Config, state: State, uid: int, key: str) -> tuple[bool, str | None, str | None]:
+    """Pure function: store key, verify with recent_activities(3), store garmin_owner_id/garmin_name
+    from ownerId/ownerDisplayName of the first activity if present, unlink on failure.
+    Returns (ok, garmin_name_or_none, error_code_or_none).
+    error_code: 'bad_key' for 401/403 from token exchange, 'garmin_unavailable' for network/5xx."""
     state.set_garmin_key(uid, key)
     add_secret(key)
-    user = state.user(uid)
     try:
         garmin = GarminApiClient(key)
-        n = len(garmin.recent_activities(3))
-        tg.send(user["chat_id"], i18n.text(user_lang(user), "garminkey_ok", n=n))
+        acts = garmin.recent_activities(3)
+        garmin_name = None
+        owner_id = None
+        if acts:
+            first = acts[0]
+            owner_id = str(first.get("ownerId") or "")
+            garmin_name = str(first.get("ownerDisplayName") or "")
+        if garmin_name or owner_id:
+            state.set_garmin_owner(uid, owner_id, garmin_name)
+        return True, garmin_name, None
+    except GarminApiError as e:
+        state.unlink_garmin(uid)
+        if e.status in (401, 403):
+            return False, None, "bad_key"
+        return False, None, "garmin_unavailable"
     except Exception as e:
         state.unlink_garmin(uid)
         log.error("garmin key check failed: %s", redact(e))
-        tg.send(user["chat_id"], i18n.text(user_lang(user or {}), "garminkey_bad"))
+        return False, None, "garmin_unavailable"
+
+
+def apply_garmin_key(cfg: Config, tg: Telegram, state: State, uid: int, key: str) -> None:
+    """Store a Personal API key (from the dialog or /garminkey), verify it live, reply via Telegram."""
+    ok, garmin_name, err = apply_garmin_key_pure(cfg, state, uid, key)
+    user = state.user(uid)
+    lang = user_lang(user or {})
+    if ok:
+        n = len(garmin.recent_activities(3)) if (garmin := GarminApiClient(key)) else 0
+        tg.send(user["chat_id"], i18n.text(lang, "garminkey_ok", n=n))
+        _notify(cfg, tg, state, user, "garmin_linked", {"name": garmin_name or ""})
+    else:
+        tg.send(user["chat_id"], i18n.text(lang, "garminkey_bad"))
 
 
 def _send_guide(cfg: Config, tg: Telegram, chat_id: int, lang: str) -> None:
@@ -349,8 +401,6 @@ def _handle_callback(cfg: Config, tg: Telegram, state: State, cb: dict) -> bool:
     else:
         log.debug("unknown callback data: %s", data)
     return True
-
-
 
 
 def ingest_garmin_link(cfg: Config, tg: Telegram, state: State, uid: int, tokens: str) -> None:
@@ -633,30 +683,64 @@ def handle_updates(cfg: Config, tg: Telegram, state: State, wait: int = 25) -> i
     return handled
 
 
+# -- runner main loop ----------------------------------------------------------------------------------------------
+
+class Runner:
+    """Main loop holder: owns the work lock and the optional Telegram client."""
+
+    def __init__(self, cfg: Config, tg: Telegram | None, state: State):
+        self.cfg = cfg
+        self.tg = tg
+        self.state = state
+        self.work_lock = threading.RLock()
+        self._stop = threading.Event()
+
+    def run_forever(self) -> None:
+        """Main loop: Telegram updates (if tg) + Garmin scan + trace checks.
+        Telegram is optional and isolated: errors are caught and logged, loop continues.
+        If TELEGRAM_BOT_TOKEN is empty, run without Telegram at all."""
+        fails = 0
+        last_scan = 0.0
+        last_check = 0.0
+        if not self.cfg.operator_chat:
+            log.warning("TELEGRAM_CHAT_ID is not set: service warnings have nowhere to go")
+        while not self._stop.is_set():
+            try:
+                if self.tg:
+                    handle_updates(self.cfg, self.tg, self.state)
+                now = time.time()
+                if now - last_scan >= self.cfg.garmin_poll_seconds:
+                    last_scan = now
+                    # work lock held for the whole cycle
+                    if self.work_lock.acquire(timeout=5):
+                        try:
+                            cycle(self.cfg, self.tg or Telegram("", self.cfg.api_base), self.state)
+                        finally:
+                            self.work_lock.release()
+                if now - last_check >= self.cfg.trace_check_seconds:
+                    last_check = now
+                    if self.work_lock.acquire(timeout=5):
+                        try:
+                            for user in self.state.osm_users():
+                                check_pending(self.cfg, self.tg or Telegram("", self.cfg.api_base), self.state, user)
+                        finally:
+                            self.work_lock.release()
+                fails = 0
+            except Exception as e:  # keep the loop alive; warn the operator once after 10 consecutive failures
+                fails += 1
+                log.error("cycle failed (%d): %s", fails, redact(e))
+                if fails == 10 and self.cfg.operator_chat:
+                    try:
+                        if self.tg:
+                            self.tg.send(self.cfg.operator_chat, i18n.text("", "cycle_warn", err=redact(e)), silent=True)
+                    except Exception:
+                        pass
+            time.sleep(1)
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
 def run_forever(cfg: Config, tg: Telegram, state: State) -> None:
-    fails = 0
-    last_scan = 0.0
-    last_check = 0.0
-    if not cfg.operator_chat:
-        log.warning("TELEGRAM_CHAT_ID is not set: service warnings have nowhere to go")
-    while True:
-        try:
-            handle_updates(cfg, tg, state)
-            now = time.time()
-            if now - last_scan >= cfg.garmin_poll_seconds:
-                last_scan = now
-                cycle(cfg, tg, state)
-            if now - last_check >= cfg.trace_check_seconds:
-                last_check = now
-                for user in state.osm_users():
-                    check_pending(cfg, tg, state, user)
-            fails = 0
-        except Exception as e:  # keep the loop alive; warn the operator once after 10 consecutive failures
-            fails += 1
-            log.error("cycle failed (%d): %s", fails, redact(e))
-            if fails == 10 and cfg.operator_chat:
-                try:
-                    tg.send(cfg.operator_chat, i18n.text("", "cycle_warn", err=redact(e)), silent=True)
-                except Exception:
-                    pass
-        time.sleep(1)
+    """Backward-compatible wrapper; used by cli.py and tests."""
+    Runner(cfg, tg, state).run_forever()

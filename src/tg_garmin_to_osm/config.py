@@ -62,7 +62,7 @@ def parse_visibility(value: str) -> str:
 
 @dataclass
 class Config:
-    token: str = ""                # TELEGRAM_BOT_TOKEN
+    token: str = ""                # TELEGRAM_BOT_TOKEN (optional: empty -> run without Telegram)
     operator_chat: str = ""        # TELEGRAM_CHAT_ID: service warnings go here (the operator)
     api_base: str = "https://api.telegram.org"
     osm_base: str = "https://www.openstreetmap.org"
@@ -75,13 +75,14 @@ class Config:
     garmin_poll_seconds: int = 600   # scan cadence per user: one page of SCAN_PAGE, deliberately light
     trace_check_seconds: int = 300   # OSM trace processing check (pending -> done)
     visibility: str = "identifiable"  # default for new users
-    upload_delay_minutes: int = 0    # window between a ride being noticed and uploaded, time to /skip it
+    upload_delay_minutes: int = 0    # window between a ride being noticed and uploading it, time to /skip it
     trace_tags: str = "bike"
     scan_page: int = 10              # activities fetched per user per scan (newest first)
     default_types: str = DEFAULT_TYPES
     ingest_token: str = ""           # bearer for the cluster-internal ingest API (the web site relays links here)
     ingest_port: int = 8080
     link_site: str = "https://garmin-osm.exiosv.com"  # where users link their accounts
+    max_web_users: int = 100         # cap for channel='web' users (only creation is refused)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -107,6 +108,7 @@ class Config:
             ingest_token=e("INGEST_TOKEN", ""),
             ingest_port=int(e("INGEST_PORT", "8080")),
             link_site=e("LINK_SITE", "https://garmin-osm.exiosv.com").rstrip("/"),
+            max_web_users=int(e("MAX_WEB_USERS", "100")),
         )
         # Exception text can carry any of these; register them before anything logs.
         redact.add_secret(cfg.token)

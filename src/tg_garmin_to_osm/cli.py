@@ -8,7 +8,7 @@ from .ingest import serve as serve_ingest
 from .garmin import GarminClient, user_token_dir
 from .osm import Osm, OsmError
 from .redact import redact
-from .runner import cycle, handle_updates, ingest_garmin_link, ingest_osm_link, run_forever
+from .runner import Runner, cycle, handle_updates, ingest_garmin_link, ingest_osm_link, run_forever
 from .state import State
 from .telegram import Telegram
 
@@ -75,15 +75,18 @@ def main() -> None:
     args = ap.parse_args()
     cmd = args.cmd
     cfg = Config.from_env()
-    tg = Telegram(cfg.token, cfg.api_base)
+    # Telegram is optional: empty token -> no Telegram
+    tg = Telegram(cfg.token, cfg.api_base) if cfg.token else None
     try:
         state = State(cfg.data_dir)
+        runner = Runner(cfg, tg, state)
         if cmd == "check":
             _check(cfg, tg, state)
             return
         if cmd == "once":
-            handle_updates(cfg, tg, state, wait=0)
-            print("cycle:", cycle(cfg, tg, state))
+            if tg:
+                handle_updates(cfg, tg, state, wait=0)
+            print("cycle:", cycle(cfg, tg or Telegram("", cfg.api_base), state))
             return
         if cmd == "backfill":
             run_backfill(cfg, tg, state, args.since, args.dry_run, args.user)
@@ -91,9 +94,10 @@ def main() -> None:
         if cfg.ingest_token:
             serve_ingest(cfg.ingest_port, cfg.ingest_token,
                          lambda uid, tokens: ingest_garmin_link(cfg, tg, state, uid, tokens),
-                         lambda uid, token, name: ingest_osm_link(cfg, tg, state, uid, token, name))
+                         lambda uid, token, name: ingest_osm_link(cfg, tg, state, uid, token, name),
+                         cfg, state, runner)
             log.info("ingest API listening on :%s", cfg.ingest_port)
-        run_forever(cfg, tg, state)
+        runner.run_forever()
     except Exception as e:  # no raw traceback: exception text can contain a token or a password
         log.error("fatal: %s", redact(e))
         sys.exit(1)
