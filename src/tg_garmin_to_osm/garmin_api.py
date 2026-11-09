@@ -32,6 +32,10 @@ def is_auth_error(exc: Exception) -> bool:
     return isinstance(exc, GarminApiError) and exc.status in (401, 403)
 
 
+class GarminFileError(ValueError):
+    """The downloaded Garmin file is corrupt or has no usable track."""
+
+
 class GarminApiClient:
     """Official Personal API client for one user's API key. The bearer token is exchanged lazily and
     re-exchanged once on auth failures (key expired/revoked -> the caller asks for a new key)."""
@@ -109,20 +113,24 @@ def _unwrap_fit(data: bytes) -> bytes:
 
     If `data` starts with b"PK" (a ZIP), open it and return the bytes of the
     single member whose name ends with ".fit" (case-insensitive).  If there is
-    no such member, raise ValueError naming the members found.  Otherwise
+    no such member, raise GarminFileError naming the members found.  Otherwise
     return `data` unchanged (plain FIT bytes).
     """
     if data.lstrip()[:2] != b"PK":
         return data
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as e:
+        raise GarminFileError(f"corrupt ZIP archive: {e}") from None
+    with zf:
         members = zf.namelist()
         fit_members = [m for m in members if m.lower().endswith(".fit")]
         if not fit_members:
-            raise ValueError(
+            raise GarminFileError(
                 f"ZIP archive contains no .fit file; members: {members}"
             )
         if len(fit_members) > 1:
-            raise ValueError(
+            raise GarminFileError(
                 f"ZIP archive contains {len(fit_members)} .fit files; "
                 f"expected one: {fit_members}"
             )
@@ -143,27 +151,35 @@ def fit_to_gpx(fit: bytes) -> bytes:
     import xml.etree.ElementTree as ET
 
     import fitdecode
+    from fitdecode.exceptions import FitError
+
+    records = []
+    try:
+        for frame in fitdecode.FitReader(fit):
+            # Only record messages carry positions; other data frames (file_id, session, lap, ...)
+            # have no such fields and fitdecode raises KeyError on a missing field.
+            if frame.frame_type != fitdecode.FIT_FRAME_DATA or getattr(frame, "name", "") != "record":
+                continue
+            lat = frame.get_value("position_lat", fallback=None)
+            lon = frame.get_value("position_long", fallback=None)
+            ts = frame.get_value("timestamp", fallback=None)
+            if lat is None or lon is None or ts is None:
+                continue
+            records.append((lat, lon, ts))
+    except FitError as e:
+        raise GarminFileError(f"corrupt FIT file: {e}") from None
+    except Exception as e:  # any other reader failure means a bad file, not a network problem
+        raise GarminFileError(f"cannot read FIT file: {e}") from None
 
     gpx = ET.Element("gpx", {"version": "1.1", "creator": "tg-garmin-to-osm"})
     trk = ET.SubElement(gpx, "trk")
     ET.SubElement(trk, "name").text = "Activity"
     seg = ET.SubElement(trk, "trkseg")
-    points = 0
-    for frame in fitdecode.FitReader(fit):
-        # Only record messages carry positions; other data frames (file_id, session, lap, ...)
-        # have no such fields and fitdecode raises KeyError on a missing field.
-        if frame.frame_type != fitdecode.FIT_FRAME_DATA or getattr(frame, "name", "") != "record":
-            continue
-        lat = frame.get_value("position_lat", fallback=None)
-        lon = frame.get_value("position_long", fallback=None)
-        ts = frame.get_value("timestamp", fallback=None)
-        if lat is None or lon is None or ts is None:
-            continue
+    for lat, lon, ts in records:
         pt = ET.SubElement(seg, "trkpt", {
             "lat": f"{_degrees(lat):.6f}",
             "lon": f"{_degrees(lon):.6f}",
         })
         ET.SubElement(pt, "time").text = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-        points += 1
-    log.info("fit->gpx: %d points", points)
+    log.info("fit->gpx: %d points", len(records))
     return ET.tostring(gpx, xml_declaration=True, encoding="UTF-8")

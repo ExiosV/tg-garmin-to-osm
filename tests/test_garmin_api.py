@@ -145,6 +145,48 @@ def test_unwrap_fit_rejects_a_zip_without_fit():
         garmin_api._unwrap_fit(_zip_with("readme.txt", b"x"))
 
 
+def test_unwrap_fit_rejects_a_corrupt_zip():
+    with pytest.raises(garmin_api.GarminFileError, match="corrupt ZIP"):
+        garmin_api._unwrap_fit(b"PK\x03\x04not a real zip")
+
+
+def test_unwrap_fit_rejects_several_fit_members():
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.fit", b"one")
+        zf.writestr("b.fit", b"two")
+    with pytest.raises(garmin_api.GarminFileError, match="2 .fit files"):
+        garmin_api._unwrap_fit(buf.getvalue())
+
+
+def test_fit_to_gpx_wraps_reader_errors(monkeypatch):
+    import fitdecode
+    from fitdecode.exceptions import FitError
+
+    class BoomReader:
+        def __init__(self, data):
+            raise FitError("bad header")
+
+    monkeypatch.setattr(fitdecode, "FitReader", BoomReader)
+    with pytest.raises(garmin_api.GarminFileError, match="corrupt FIT"):
+        garmin_api.fit_to_gpx(b"garbage")
+
+
+def test_fit_to_gpx_wraps_other_reader_errors(monkeypatch):
+    import fitdecode
+
+    class BoomReader:
+        def __init__(self, data):
+            raise ValueError("truncated")
+
+    monkeypatch.setattr(fitdecode, "FitReader", BoomReader)
+    with pytest.raises(garmin_api.GarminFileError, match="cannot read FIT"):
+        garmin_api.fit_to_gpx(b"garbage")
+
+
 def test_download_gpx_converts_a_zip_wrapped_fit(monkeypatch):
     """Garmin answers the FIT download with a ZIP for many activities (live: walking, gravel)."""
     z = _zip_with("501_ACTIVITY.fit", b"RAWFIT")

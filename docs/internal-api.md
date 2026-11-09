@@ -99,7 +99,9 @@ POST /api/users/{uid}/sync
 
 ```
 POST /api/users/{uid}/activities/{activity_id}/upload
-  200 {"ok": true, "status": str} | 400 | 404
+  200 {"ok": true, "status": str} | 400 | 404 | 422
+  422 {"error": "no_track", "reason": str}
+  422 {"error": "upload_failed", "reason": str}
 
 POST /api/users/{uid}/activities/{activity_id}/skip
   200 {"ok": true} | 400 | 404
@@ -108,6 +110,18 @@ POST /api/users/{uid}/activities/{activity_id}/skip
 - "skip" offered for same statuses.
 - Unknown activity ID: fetches from Garmin (legacy `GarminClient` for token-file users,
   Personal API client for key users), inserts as `new`, then uploads.
+
+#### Upload failure classes
+
+A 422 `{"error": ..., "reason": ...}` means the upload produced no trace. `reason` is the
+redacted detail, at most 200 characters. The `error` value tells the classes apart:
+
+- `no_track` - a track-file problem (the Garmin file is corrupt or has no track points).
+  The row is set to `failed` at once with `attempts = 1` and
+  `last_error = "no_track: <detail>"`. No Telegram message is sent. A repeated upload does not help.
+- `upload_failed` - every other failure (Garmin auth/network, OSM rejection). The row keeps its
+  current retry state and `last_error` text. A transient OSM error leaves the row `new`;
+  three permanent OSM rejections set it to `failed`.
 
 ### Unlink
 

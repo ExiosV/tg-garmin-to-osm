@@ -296,9 +296,12 @@ class ApiHandler(BaseHTTPRequestHandler):
         trace_id = upload_one(self.cfg, garmin, osm, self.state, user, row, self.runner.tg,
                               user_vis(user, self.cfg), notify=True)
         if not trace_id:
-            row = self.state.activity(uid, aid)
-            reason = (row.get("last_error") or "unknown error")[:200]
-            return self._reply(422, {"error": "upload_failed", "reason": reason})
+            row = self.state.activity(uid, aid) or {}
+            err = redact(row.get("last_error") or "unknown error")
+            if err.startswith("no_track"):
+                detail = err[len("no_track"):].lstrip(": ").strip() or "unknown error"
+                return self._reply(422, {"error": "no_track", "reason": detail[:200]})
+            return self._reply(422, {"error": "upload_failed", "reason": err[:200]})
         row = self.state.activity(uid, aid)
         return self._reply(200, {"ok": True, "status": row["status"]})
 

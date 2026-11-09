@@ -146,18 +146,20 @@ def test_upload_ready_respects_delay(tmp_path, monkeypatch):
     assert garmin.downloads == [] and st.activity(42, "101")["status"] == "new"
 
 
-def test_upload_bad_gpx_burns_an_attempt_then_fails(tmp_path, monkeypatch):
-    """A file without timestamped points will not fix itself: count attempts instead of retrying
-    on every scan forever (live case: Garmin answered with a ZIP, fitdecode gave 0 points)."""
+def test_upload_bad_gpx_fails_at_once_without_telegram(tmp_path, monkeypatch):
+    """A file without timestamped points will not fix itself: fail on the first try, one attempt,
+    and no misleading "N attempts" Telegram message (the site shows the reason)."""
     bad = b"<gpx><trk><trkpt lat='1' lon='2'/></trk></gpx>"  # no timestamps
     c, st, garmin, tg, u = seeded(tmp_path, monkeypatch, [act()], gpx=bad)
     assert upload_all(c, garmin, tg, st, u) == 0
     row = st.activity(42, "101")
-    assert row["attempts"] == 1 and row["last_error"]
-    for _ in range(runner_mod.MAX_ATTEMPTS - 1):
-        upload_all(c, garmin, tg, st, u)
-    assert st.activity(42, "101")["status"] == "failed"
-    assert any("Не смог загрузить" in t for _, t in tg.sent)  # final failure is reported
+    assert row["status"] == "failed" and row["attempts"] == 1
+    assert row["last_error"].startswith("no_track: ")
+    assert tg.sent == []  # no Telegram message for a track-file problem
+    assert any(e["kind"] == "upload_failed" and e["data"]["activity_id"] == "101"
+               for e in st.events(42))
+    assert upload_all(c, garmin, tg, st, u) == 0  # the cycle does not retry a failed row
+    assert st.activity(42, "101")["attempts"] == 1
 
 
 def test_upload_permanent_osm_error_fails_after_three(tmp_path, monkeypatch):
@@ -264,10 +266,31 @@ def test_check_pending_flow(tmp_path, monkeypatch):
 def test_check_pending_404_is_silence(tmp_path, monkeypatch):
     c, st, garmin, tg, u = seeded(tmp_path, monkeypatch, [act()])
     upload_all(c, garmin, tg, st, u)
+    sent_before = len(tg.sent)
     fake = _Osm.instances[-1]
     fake.pending[1] = "404"  # OSM has not made the trace visible yet
     assert check_pending(c, tg, st, u) == 0
     assert st.activity(42, "101")["status"] == "uploaded"
+    assert len(tg.sent) == sent_before  # a recent 404 is not a failure
+
+
+def test_check_pending_old_404_marks_failed(tmp_path, monkeypatch):
+    """A trace still missing after two hours is gone: stop polling and record the failure."""
+    c, st, garmin, tg, u = seeded(tmp_path, monkeypatch, [act()])
+    upload_all(c, garmin, tg, st, u)
+    sent_before = len(tg.sent)
+    fake = _Osm.instances[-1]
+    fake.pending[1] = "404"
+    st.db.execute("UPDATE activities SET uploaded_ts=? WHERE user_id=42 AND activity_id='101'",
+                  (int(time.time()) - 3 * 3600,))
+    st.db.commit()
+    assert check_pending(c, tg, st, u) == 0
+    row = st.activity(42, "101")
+    assert row["status"] == "failed"
+    assert row["last_error"] == "osm: trace not found on OSM after 2 hours"
+    events = st.events(42)
+    assert any(e["kind"] == "upload_failed" and e["data"]["activity_id"] == "101" for e in events)
+    assert len(tg.sent) == sent_before  # the event is enough; no Telegram message
 
 
 # -- commands / onboarding ------------------------------------------------------------------------------------------

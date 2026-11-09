@@ -934,8 +934,8 @@ def test_run_forever_survives_getupdates_exception(tmp_path, monkeypatch):
     assert call_count["n"] >= 1
 
 def test_activity_upload_without_track_returns_422(tmp_path, monkeypatch):
-    """A Garmin file with no track points (walks often have none): 422 with a reason, an event,
-    and an attempt recorded so the auto-retry stops after MAX_ATTEMPTS."""
+    """A Garmin file with no track points (walks often have none): 422 no_track, the row is
+    'failed' after one attempt, and no retry is promised."""
     c, st, runner, server, port = make_test_server(tmp_path)
     link_user(st, uid=42, garmin=True, osm=True)
     st.insert_activity(42, "101", "Walk", "walking", 100, 3.0, "new")
@@ -950,11 +950,109 @@ def test_activity_upload_without_track_returns_422(tmp_path, monkeypatch):
     try:
         code, body = post(port, "/api/users/42/activities/101/upload", "SECRETTOKEN1", {})
         assert code == 422
-        assert body["error"] == "upload_failed"
+        assert body["error"] == "no_track"
         assert "track point" in body["reason"]
+        assert not body["reason"].startswith("no_track")
         row = st.activity(42, "101")
-        assert row["attempts"] == 1 and row["last_error"]
-        assert row["status"] in ("new", "failed")
+        assert row["status"] == "failed" and row["attempts"] == 1
+        assert row["last_error"].startswith("no_track: ")
         assert any(e["kind"] == "upload_failed" for e in st.events(42))
+    finally:
+        server.shutdown()
+
+
+# -- upload failure classes (no_track vs upload_failed) ---------------------------
+
+def test_activity_upload_transient_osm_error_is_upload_failed(tmp_path, monkeypatch):
+    """An OSM outage is not a file problem: 422 upload_failed, the row stays retryable."""
+    from tg_garmin_to_osm.osm import OsmError
+
+    c, st, runner, server, port = make_test_server(tmp_path)
+    link_user(st, uid=42, garmin=True, osm=True)
+    st.insert_activity(42, "101", "Ride", "cycling", 100, 20.0, "new")
+    garmin = _Garmin(activities=[act(101)])
+    fake = _Osm("", "")
+    fake.upload_error = OsmError("upload_gpx", 503, "down")
+    import tg_garmin_to_osm.runner as runner_mod
+    import tg_garmin_to_osm.garmin as garmin_mod
+    monkeypatch.setattr(ingest_mod, "Osm", lambda base, token: fake)
+    monkeypatch.setattr(runner_mod, "GarminClient", lambda token_dir: garmin)
+    monkeypatch.setattr(garmin_mod, "GarminClient", lambda token_dir: garmin)
+    try:
+        code, body = post(port, "/api/users/42/activities/101/upload", "SECRETTOKEN1", {})
+        assert code == 422
+        assert body["error"] == "upload_failed"
+        row = st.activity(42, "101")
+        assert row["status"] == "new"  # transient: the next scan retries
+    finally:
+        server.shutdown()
+
+
+def test_activity_upload_garmin_auth_error_is_upload_failed(tmp_path, monkeypatch):
+    """A dead Garmin session is not a file problem."""
+    c, st, runner, server, port = make_test_server(tmp_path)
+    link_user(st, uid=42, garmin=True, osm=True)
+    st.insert_activity(42, "101", "Ride", "cycling", 100, 20.0, "new")
+    garmin = _Garmin(activities=[act(101)], fail_ids=[101],
+                     error="garmin download 401 unauthorized")
+    import tg_garmin_to_osm.runner as runner_mod
+    import tg_garmin_to_osm.garmin as garmin_mod
+    monkeypatch.setattr(ingest_mod, "Osm", _Osm)
+    monkeypatch.setattr(runner_mod, "GarminClient", lambda token_dir: garmin)
+    monkeypatch.setattr(garmin_mod, "GarminClient", lambda token_dir: garmin)
+    try:
+        code, body = post(port, "/api/users/42/activities/101/upload", "SECRETTOKEN1", {})
+        assert code == 422
+        assert body["error"] == "upload_failed"
+        assert st.activity(42, "101")["status"] == "new"
+    finally:
+        server.shutdown()
+
+
+class _RawResp:
+    def __init__(self, status=200, text="", content=None):
+        self.status_code = status
+        self.text = text
+        self.content = text.encode() if content is None else content
+
+
+def _file_client(monkeypatch, content):
+    """A real GarminApiClient whose FIT endpoint returns `content`."""
+    import tg_garmin_to_osm.garmin_api as garmin_api
+
+    def fake_post(url, headers=None, timeout=None):
+        return _RawResp(text="BEARERTOKEN1")
+
+    def fake_get(url, headers=None, timeout=None):
+        if "/download-service/export/gpx/" in url:
+            return _RawResp(status=404, text="no gpx")
+        return _RawResp(content=content)
+
+    monkeypatch.setattr(garmin_api.requests, "post", fake_post)
+    monkeypatch.setattr(garmin_api.requests, "get", fake_get)
+    return garmin_api.GarminApiClient("KEY1")
+
+
+@pytest.mark.parametrize("content", [b"PK\x03\x04not a real zip", b"\x0eFITDATA garbage"],
+                         ids=["corrupt_zip", "corrupt_fit"])
+def test_activity_upload_corrupt_file_is_no_track(tmp_path, monkeypatch, content):
+    """A corrupt ZIP or FIT is a file problem: 422 no_track and the row fails at once."""
+    c, st, runner, server, port = make_test_server(tmp_path)
+    link_user(st, uid=42, garmin=True, osm=True)
+    st.insert_activity(42, "101", "Ride", "cycling", 100, 20.0, "new")
+    client = _file_client(monkeypatch, content)
+    import tg_garmin_to_osm.runner as runner_mod
+    import tg_garmin_to_osm.garmin as garmin_mod
+    monkeypatch.setattr(ingest_mod, "Osm", _Osm)
+    monkeypatch.setattr(runner_mod, "GarminClient", lambda token_dir: client)
+    monkeypatch.setattr(garmin_mod, "GarminClient", lambda token_dir: client)
+    try:
+        code, body = post(port, "/api/users/42/activities/101/upload", "SECRETTOKEN1", {})
+        assert code == 422
+        assert body["error"] == "no_track"
+        assert body["reason"] and not body["reason"].startswith("no_track")
+        row = st.activity(42, "101")
+        assert row["status"] == "failed" and row["attempts"] == 1
+        assert row["last_error"].startswith("no_track: ")
     finally:
         server.shutdown()
