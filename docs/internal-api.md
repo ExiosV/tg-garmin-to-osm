@@ -148,17 +148,26 @@ Unknown kinds render as neutral line on web.
 ## Concurrency & Locking
 
 - **State thread-safety**: Single SQLite connection with `check_same_thread=False`, guarded by internal `threading.RLock` on every method.
-- **Runner work lock**: `Runner.work_lock` (`threading.RLock`). Held during:
-  - `cycle()` (scan all users)
-  - `check_pending()` (trace checks)
-  - One batch of Telegram `handle_updates()` command handling
-  - **Never held during** `getUpdates` long poll.
+- **Work lock**: module-level `runner.WORK_LOCK` (`threading.RLock`), shared by the main loop,
+  Telegram command handling and the API. Held during:
+  - `cycle()` (scan all users) and the trace checks
+  - the processing of each Telegram update (one lock per update)
+  - **never** during the `getUpdates` long poll.
+- When the lock is busy, the loop does not move its scan/check timers: the work runs on the next pass.
 - **API handlers** acquire work lock with `acquire(timeout=20)` for mutating routes; return 503 `{"error": "busy"}` on timeout.
 - Read-only routes (`GET /api/users/{uid}`) do not acquire the work lock.
 
 ## Backfill & Migration
 
-- `osm_uid` backfilled once for existing users with token and no `osm_uid` (inside cycle, skips quietly on 401/errors).
+- `osm_uid` is stored on every OSM link (web, `/ingest/osm` with `osm_uid`, bot `/login` via
+  `user/details.json`). `save_osm_user` keeps the old `osm_uid` and `chat_id` when the new value is NULL.
+- Backfill: each cycle fills `osm_uid` for users with a token and no `osm_uid`; errors are skipped
+  quietly (retried next cycle); an id that another row already has is logged and skipped.
+- `garmin.failing` is true while meta `garmin_fail:<uid>` is set; a successful scan or a verified new
+  key clears it.
+- Activity `actions`: `upload` for new/backlog/ignored/skipped/failed; `skip` for new/failed only.
+- `edit_url` (only for `done`): from the newest `processed` event, else `{base}/edit?editor=id&gpx=<id>`.
+- `/api/accounts/osm` for an existing user updates the token and name only (the language stays).
 - Migration via existing `_migrate_users` pattern: additive `ALTER TABLE ADD COLUMN` only, never drop/rewrite.
 - New columns: `channel TEXT DEFAULT 'telegram'`, `osm_uid INTEGER`, `garmin_owner_id TEXT`, `garmin_name TEXT`.
 - New table: `events` with index `idx_events_user_ts`.
@@ -167,6 +176,9 @@ Unknown kinds render as neutral line on web.
 ## Running Without Telegram
 
 - `TELEGRAM_BOT_TOKEN` empty → bot runs without Telegram entirely.
-- `run_forever` catches and logs `getUpdates` exceptions, backs off, continues Garmin/OSM cycles.
-- Operator alerts (10 consecutive failures) skipped when Telegram is off.
-- `cycle()` and `check_pending()` use a dummy `Telegram("")` for event writing only.
+- `getUpdates` errors are caught in their own `try` (logged redacted, 5 s back-off); the Garmin/OSM
+  work of the same loop pass still runs.
+- Operator alerts (10 consecutive failures) are skipped when Telegram is off.
+- `tg` may be `None` everywhere; `_notify` always writes the event and sends Telegram only when
+  `tg`, a message key and the user's `chat_id` are set. API calls pass the bot's `tg`, so a Telegram
+  user who acts on the web still gets the Telegram message.

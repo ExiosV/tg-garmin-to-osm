@@ -9,7 +9,7 @@ import time
 from . import gpx as gpxmod
 from . import i18n
 from .config import Config
-from .garmin import GarminClient, user_token_dir
+from .garmin import GarminClient
 from .osm import Osm, OsmError
 from .redact import redact
 from .runner import activity_start_ts, expand_types_user, is_ride, summary_row, upload_one, user_vis

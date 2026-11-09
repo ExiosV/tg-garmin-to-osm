@@ -41,6 +41,11 @@ def exchange_code(base: str, client_id: str, client_secret: str, code: str) -> d
     return r.json()
 
 
+def user_details(base: str, access_token: str) -> tuple[int, str]:
+    """(osm_uid, display_name) of the token owner: GET /api/0.6/user/details.json (Bearer)."""
+    return Osm(base, access_token).user_details()
+
+
 class Osm:
     """Authenticated API 0.6 calls for one logged-in user."""
 
@@ -59,8 +64,12 @@ class Osm:
         return r
 
     def user_name(self) -> str:
-        data = self._call("GET", "/api/0.6/user/details.json").json()
-        return (data.get("user") or {}).get("display_name") or ""
+        return self.user_details()[1]
+
+    def user_details(self) -> tuple[int, str]:
+        """(numeric OSM user id, display name) of the token owner."""
+        user = self._call("GET", "/api/0.6/user/details.json").json().get("user") or {}
+        return int(user.get("id") or 0), user.get("display_name") or ""
 
     def upload_gpx(self, gpx_bytes: bytes, description: str, tags: str = "",
                    visibility: str = "identifiable") -> int:

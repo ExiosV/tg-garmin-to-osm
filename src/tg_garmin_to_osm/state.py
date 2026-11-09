@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sqlite3
@@ -78,6 +79,11 @@ class State:
             )
             self.db.commit()
 
+    def delete_meta(self, k: str) -> None:
+        with self._lock:
+            self.db.execute("DELETE FROM meta WHERE k=?", (k,))
+            self.db.commit()
+
     def initialized(self) -> bool:
         with self._lock:
             return self.db.execute("SELECT 1 FROM meta WHERE k='init'").fetchone() is not None
@@ -107,11 +113,15 @@ class State:
 
     def save_osm_user(self, user_id: int, chat_id: Optional[int], access_token: str, osm_name: str,
                       osm_uid: Optional[int] = None) -> None:
+        """Save OSM user. Keeps existing chat_id and osm_uid when new values are None (COALESCE)."""
         with self._lock:
             self.db.execute(
                 "INSERT INTO users(user_id, chat_id, osm_access_token, osm_name, created_ts, osm_uid) VALUES (?,?,?,?,?,?) "
-                "ON CONFLICT(user_id) DO UPDATE SET chat_id=excluded.chat_id, "
-                "osm_access_token=excluded.osm_access_token, osm_name=excluded.osm_name, osm_uid=excluded.osm_uid",
+                "ON CONFLICT(user_id) DO UPDATE SET "
+                "chat_id=COALESCE(excluded.chat_id, users.chat_id), "
+                "osm_access_token=excluded.osm_access_token, "
+                "osm_name=excluded.osm_name, "
+                "osm_uid=COALESCE(excluded.osm_uid, users.osm_uid)",
                 (int(user_id), int(chat_id) if chat_id is not None else None, access_token, osm_name,
                  int(time.time()), osm_uid),
             )
@@ -159,6 +169,17 @@ class State:
                 "UPDATE users SET garmin_owner_id=?, garmin_name=? WHERE user_id=?",
                 (owner_id, name, int(user_id)),
             )
+            self.db.commit()
+
+    def set_osm_uid(self, user_id: int, osm_uid: int) -> None:
+        with self._lock:
+            self.db.execute("UPDATE users SET osm_uid=? WHERE user_id=?", (int(osm_uid), int(user_id)))
+            self.db.commit()
+
+    def set_channel(self, user_id: int, channel: str) -> None:
+        """Set user channel (telegram/web) under the State lock."""
+        with self._lock:
+            self.db.execute("UPDATE users SET channel=? WHERE user_id=?", (channel, int(user_id)))
             self.db.commit()
 
     def garmin_osm_users(self) -> list:
@@ -305,7 +326,6 @@ class State:
     # -- events (per-user outbox) ------------------------------------------------------------------------------------
     def add_event(self, user_id: int, kind: str, data: dict) -> None:
         """Write an event row; keep at most 200 per user (drop oldest)."""
-        import json
         with self._lock:
             self.db.execute(
                 "INSERT INTO events(user_id, ts, kind, data) VALUES (?,?,?,?)",
@@ -314,7 +334,7 @@ class State:
             # trim to 200
             self.db.execute(
                 "DELETE FROM events WHERE user_id=? AND id NOT IN ("
-                "SELECT id FROM events WHERE user_id=? ORDER BY ts DESC LIMIT 200)",
+                "SELECT id FROM events WHERE user_id=? ORDER BY ts DESC, id DESC LIMIT 200)",
                 (int(user_id), int(user_id)),
             )
             self.db.commit()
@@ -322,10 +342,9 @@ class State:
     def events(self, user_id: int, limit: int = 30) -> list:
         with self._lock:
             rows = self.db.execute(
-                "SELECT ts, kind, data FROM events WHERE user_id=? ORDER BY ts DESC LIMIT ?",
+                "SELECT ts, kind, data FROM events WHERE user_id=? ORDER BY ts DESC, id DESC LIMIT ?",
                 (int(user_id), int(limit)),
             ).fetchall()
-            import json
             return [{"ts": r["ts"], "kind": r["kind"], "data": json.loads(r["data"])} for r in rows]
 
     # -- deletion ----------------------------------------------------------------------------------------------------

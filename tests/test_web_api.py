@@ -4,6 +4,7 @@ import urllib.request
 
 import pytest
 
+import tg_garmin_to_osm.ingest as ingest_mod
 from tg_garmin_to_osm.config import Config
 from tg_garmin_to_osm.ingest import serve
 from tg_garmin_to_osm.runner import Runner, apply_garmin_key_pure
@@ -86,10 +87,11 @@ def test_apply_garmin_key_pure_success(tmp_path, monkeypatch):
                             {"activityId": 3, "activityName": "Walk", "activityType": {"typeKey": "walking"},
                              "startTimeGMT": "2026-01-03 00:00:00", "distance": 3000},
                         ]))
-    ok, garmin_name, err = apply_garmin_key_pure(c, st, 42, "VALIDKEY")
+    ok, garmin_name, err, n = apply_garmin_key_pure(c, st, 42, "VALIDKEY")
     assert ok is True
     assert garmin_name == "John Doe"
     assert err is None
+    assert n == 3
     u = st.user(42)
     assert u["garmin_api_key"] == "VALIDKEY"
     assert u["garmin_linked"] == 1
@@ -109,7 +111,7 @@ def test_apply_garmin_key_pure_bad_key(tmp_path, monkeypatch):
             raise GarminApiError("exchange", 401, "unauthorized")
     import tg_garmin_to_osm.runner as runner_mod
     monkeypatch.setattr(runner_mod, "GarminApiClient", _Boom)
-    ok, garmin_name, err = apply_garmin_key_pure(c, st, 42, "BADKEY")
+    ok, garmin_name, err, n = apply_garmin_key_pure(c, st, 42, "BADKEY")
     assert ok is False
     assert err == "bad_key"
     u = st.user(42)
@@ -129,7 +131,7 @@ def test_apply_garmin_key_pure_garmin_unavailable(tmp_path, monkeypatch):
             raise GarminApiError("exchange", 503, "service unavailable")
     import tg_garmin_to_osm.runner as runner_mod
     monkeypatch.setattr(runner_mod, "GarminApiClient", _Boom)
-    ok, garmin_name, err = apply_garmin_key_pure(c, st, 42, "KEY")
+    ok, garmin_name, err, n = apply_garmin_key_pure(c, st, 42, "KEY")
     assert ok is False
     assert err == "garmin_unavailable"
     u = st.user(42)
@@ -172,7 +174,7 @@ def test_accounts_osm_update_existing(tmp_path):
         u = st.user(-12345)
         assert u["osm_access_token"] == "NEWTKN"
         assert u["osm_name"] == "newname"
-        assert u["lang"] == "ru"
+        assert u["lang"] == "en"  # an existing user keeps their language
     finally:
         server.shutdown()
 
@@ -455,6 +457,7 @@ def test_activity_upload_known(tmp_path, monkeypatch):
     import tg_garmin_to_osm.garmin as garmin_mod
     import tg_garmin_to_osm.osm as osm_mod
     monkeypatch.setattr(osm_mod, "Osm", _Osm)
+    monkeypatch.setattr(ingest_mod, "Osm", _Osm)
     monkeypatch.setattr(runner_mod, "GarminClient", lambda token_dir: garmin)
     monkeypatch.setattr(garmin_mod, "GarminClient", lambda token_dir: garmin)
     try:
@@ -479,6 +482,7 @@ def test_activity_upload_unknown_fetches_from_garmin(tmp_path, monkeypatch):
     import tg_garmin_to_osm.garmin as garmin_mod
     import tg_garmin_to_osm.osm as osm_mod
     monkeypatch.setattr(osm_mod, "Osm", _Osm)
+    monkeypatch.setattr(ingest_mod, "Osm", _Osm)
     monkeypatch.setattr(runner_mod, "GarminClient", lambda token_dir: garmin)
     monkeypatch.setattr(garmin_mod, "GarminClient", lambda token_dir: garmin)
     try:
@@ -503,6 +507,7 @@ def test_activity_upload_already_uploaded(tmp_path, monkeypatch):
     import tg_garmin_to_osm.garmin as garmin_mod
     import tg_garmin_to_osm.osm as osm_mod
     monkeypatch.setattr(osm_mod, "Osm", _Osm)
+    monkeypatch.setattr(ingest_mod, "Osm", _Osm)
     monkeypatch.setattr(runner_mod, "GarminClient", lambda token_dir: garmin)
     monkeypatch.setattr(garmin_mod, "GarminClient", lambda token_dir: garmin)
     try:
@@ -525,6 +530,7 @@ def test_activity_skip(tmp_path, monkeypatch):
     import tg_garmin_to_osm.garmin as garmin_mod
     import tg_garmin_to_osm.osm as osm_mod
     monkeypatch.setattr(osm_mod, "Osm", _Osm)
+    monkeypatch.setattr(ingest_mod, "Osm", _Osm)
     monkeypatch.setattr(runner_mod, "GarminClient", lambda token_dir: garmin)
     monkeypatch.setattr(garmin_mod, "GarminClient", lambda token_dir: garmin)
     try:
@@ -558,6 +564,7 @@ def test_activity_skip_already_uploaded(tmp_path, monkeypatch):
     import tg_garmin_to_osm.garmin as garmin_mod
     import tg_garmin_to_osm.osm as osm_mod
     monkeypatch.setattr(osm_mod, "Osm", _Osm)
+    monkeypatch.setattr(ingest_mod, "Osm", _Osm)
     monkeypatch.setattr(runner_mod, "GarminClient", lambda token_dir: garmin)
     monkeypatch.setattr(garmin_mod, "GarminClient", lambda token_dir: garmin)
     try:
@@ -803,6 +810,7 @@ def test_events_written_for_web_user(tmp_path, monkeypatch):
     import tg_garmin_to_osm.runner as runner_mod
     import tg_garmin_to_osm.osm as osm_mod
     monkeypatch.setattr(osm_mod, "Osm", _Osm)
+    monkeypatch.setattr(ingest_mod, "Osm", _Osm)
     monkeypatch.setattr(runner_mod, "Osm", _Osm)
     monkeypatch.setattr(runner_mod, "GarminApiClient", lambda key: garmin)
     tg = _Tg()

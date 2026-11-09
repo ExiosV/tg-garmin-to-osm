@@ -2,20 +2,30 @@
 sign-up and all settings through this API. The bot process stays the single writer of its SQLite
 and PVC. Bearer-token authenticated, fail-closed; no Ingress, so nothing outside the cluster sees it.
 """
+import hmac
 import json
 import logging
 import os
+import shutil
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
-from .config import Config, TYPE_GROUPS, expand_types
+from . import osm as osmmod
+from .config import TYPE_GROUPS, VISIBILITIES, Config
+from .garmin import user_token_dir
+from .osm import Osm
 from .redact import redact
-from .runner import Runner, apply_garmin_key_pure, user_cycle
+from .runner import (WORK_LOCK, Runner, apply_garmin_key_pure, garmin_client_for, ingest_garmin_link,
+                     ingest_osm_link, summary_row, upload_one, user_cycle, user_vis)
 from .state import State
 
 log = logging.getLogger("tg_garmin_to_osm")
+
+# what the web may offer per activity status: /upload works for every not-yet-uploaded row,
+# /skip only matters for rows the cycle would upload (backlog/ignored never auto-upload)
+UPLOAD_STATUSES = ("new", "backlog", "ignored", "skipped", "failed")
+SKIP_STATUSES = ("new", "failed")
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -37,7 +47,6 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _authorized(self) -> bool:
-        import hmac
         header = self.headers.get("Authorization") or ""
         return bool(self.cfg.ingest_token) and hmac.compare_digest(header, f"Bearer {self.cfg.ingest_token}")
 
@@ -70,10 +79,10 @@ class ApiHandler(BaseHTTPRequestHandler):
         return None
 
     def _acquire_work_lock(self) -> bool:
-        return self.runner.work_lock.acquire(timeout=20)
+        return WORK_LOCK.acquire(timeout=20)
 
     def _release_work_lock(self) -> None:
-        self.runner.work_lock.release()
+        WORK_LOCK.release()
 
     def do_GET(self) -> None:
         if self.path == "/ping":
@@ -104,7 +113,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                 tokens = str(body["tokens"])
                 if not tokens.strip().startswith("{"):
                     raise ValueError("tokens must be the garmin_tokens.json content")
-                from .runner import ingest_garmin_link
                 ingest_garmin_link(self.cfg, self.runner.tg, self.state, uid, tokens)
                 return self._reply(200, {"ok": True})
 
@@ -114,14 +122,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 name = str(body.get("name") or "")
                 if not access_token:
                     raise ValueError("access_token is empty")
-                # optional osm_uid to detect collision
-                if "osm_uid" in body:
-                    osm_uid = int(body["osm_uid"])
+                osm_uid = int(body["osm_uid"]) if body.get("osm_uid") is not None else None
+                if osm_uid is not None:
                     existing = self.state.find_by_osm_uid(osm_uid)
                     if existing and existing["user_id"] != uid:
                         return self._reply(409, {"error": "osm_taken"})
-                from .runner import ingest_osm_link
-                ingest_osm_link(self.cfg, self.runner.tg, self.state, uid, access_token, name)
+                ingest_osm_link(self.cfg, self.runner.tg, self.state, uid, access_token, name, osm_uid)
                 return self._reply(200, {"ok": True})
 
             # --- /api/accounts/* ---
@@ -153,10 +159,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             lang = "en"
 
         existing = self.state.find_by_osm_uid(osm_uid)
-        if existing:
-            # update token + name + lang for existing user
+        if existing:  # token + name only: the user's language stays as it is
             self.state.save_osm_user(existing["user_id"], existing["chat_id"], access_token, osm_name, osm_uid)
-            self.state.set_setting(existing["user_id"], "lang", lang)
             return self._reply(200, {"uid": existing["user_id"], "created": False})
 
         # new web user
@@ -171,9 +175,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         chat_id = None
         self.state.touch_user(uid, chat_id, lang)
         self.state.save_osm_user(uid, chat_id, access_token, osm_name, osm_uid)
-        self.state.db.execute(
-            "UPDATE users SET channel='web' WHERE user_id=?", (uid,))
-        self.state.db.commit()
+        self.state.set_channel(uid, "web")
         log.info("created web user %s (osm_uid=%s)", uid, osm_uid)
         return self._reply(200, {"uid": uid, "created": True})
 
@@ -184,9 +186,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             lang = "en"
         # ensure row exists with chat_id = tg_uid
         self.state.touch_user(tg_uid, tg_uid, lang)
-        self.state.db.execute(
-            "UPDATE users SET channel='telegram' WHERE user_id=?", (tg_uid,))
-        self.state.db.commit()
+        self.state.set_channel(tg_uid, "telegram")
         return self._reply(200, {"uid": tg_uid})
 
     # -- user routes ------------------------------------------------------------------------------------
@@ -226,7 +226,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         key = str(body.get("key") or "").strip()
         if not key:
             return self._reply(400, {"error": "bad_key"})
-        ok, garmin_name, err = apply_garmin_key_pure(self.cfg, self.state, uid, key)
+        ok, garmin_name, err, _ = apply_garmin_key_pure(self.cfg, self.state, uid, key)
         if not ok:
             return self._reply(200, {"ok": False, "error": err or "bad_key"})
         return self._reply(200, {"ok": True, "garmin_name": garmin_name})
@@ -238,12 +238,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.state.set_setting(uid, "auto", val)
         if "types" in body:
             val = str(body["types"]).strip().lower()
-            if not expand_types(val):
+            if not val:
                 return self._reply(400, {"error": "bad_types"})
             self.state.set_setting(uid, "types", val)
         if "visibility" in body:
             val = str(body["visibility"]).strip().lower()
-            if val not in ("identifiable", "trackable"):
+            if val not in VISIBILITIES:
                 return self._reply(400, {"error": "bad_visibility"})
             self.state.set_setting(uid, "visibility", val)
         if "lang" in body:
@@ -259,10 +259,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             return self._reply(409, {"error": "not_ready"})
         if not user["osm_access_token"]:
             return self._reply(409, {"error": "not_ready"})
-        # run user_cycle with a dummy tg (events still written)
-        from .telegram import Telegram
-        dummy_tg = Telegram("", self.cfg.api_base)
-        res = user_cycle(self.cfg, dummy_tg, self.state, user)
+        res = user_cycle(self.cfg, self.runner.tg, self.state, user)
         return self._reply(200, {"ok": True, "new": res["seen"], "uploaded": res["uploaded"]})
 
     def _handle_activity_upload(self, uid: int, aid: str) -> None:
@@ -272,11 +269,6 @@ class ApiHandler(BaseHTTPRequestHandler):
             return self._reply(400, {"error": "already_uploaded"})
         if not user["garmin_linked"] or not user["osm_access_token"]:
             return self._reply(409, {"error": "not_ready"})
-        from .runner import garmin_client_for, summary_row, upload_one, user_vis
-        from .garmin import user_token_dir
-        from .osm import Osm
-        from .redact import redact
-
         if not row:
             # unknown id: use legacy GarminClient for token-file users, Personal API for key users
             garmin = garmin_client_for(self.cfg, user)
@@ -294,7 +286,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         garmin = garmin_client_for(self.cfg, self.state.user(uid))
         osm = Osm(self.cfg.osm_base, user["osm_access_token"])
         row = self.state.activity(uid, aid)
-        trace_id = upload_one(self.cfg, garmin, osm, self.state, user, row, None,
+        trace_id = upload_one(self.cfg, garmin, osm, self.state, user, row, self.runner.tg,
                               user_vis(user, self.cfg), notify=True)
         if not trace_id:
             return self._reply(400, {"error": "upload_failed"})
@@ -336,9 +328,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self._reply(503, {"error": "busy"})
             try:
                 self.state.delete_user(uid)
-                # legacy token dir
-                from .garmin import user_token_dir
-                import shutil
                 d = user_token_dir(self.cfg.garmin_token_dir, uid)
                 if os.path.exists(d):
                     shutil.rmtree(d, ignore_errors=True)
@@ -349,28 +338,42 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     # -- helpers -----------------------------------------------------------------------------------------
 
+    def _activity_view(self, user: dict, act: dict, edit_urls: dict) -> dict:
+        """One activities row in the contract shape (internal columns dropped)."""
+        trace_id = act.get("trace_id")
+        trace_url = edit_url = None
+        if trace_id:
+            trace_url = osmmod.trace_link(self.cfg.osm_base, trace_id, user.get("osm_name") or "")
+            if act["status"] == "done":
+                edit_url = (edit_urls.get(act["activity_id"])
+                            or f"{self.cfg.osm_base.rstrip('/')}/edit?editor=id&gpx={int(trace_id)}")
+        actions = []
+        if act["status"] in UPLOAD_STATUSES:
+            actions.append("upload")
+        if act["status"] in SKIP_STATUSES:
+            actions.append("skip")
+        return {"activity_id": act["activity_id"], "name": act["name"] or "", "type": act["type"] or "",
+                "start_ts": act["start_ts"] or 0, "distance_km": act["distance_km"],
+                "status": act["status"], "trace_id": trace_id, "trace_url": trace_url,
+                "edit_url": edit_url, "last_error": act["last_error"], "actions": actions}
+
     def _build_user_response(self, user: dict) -> dict:
-        from .runner import expand_types_user, user_vis
         uid = user["user_id"]
-        counts = self.state.counts(uid)
-        activities = self.state.recent_activities(uid, 30)
-        # actions per activity
-        for act in activities:
-            actions = []
-            if act["status"] in ("new", "backlog", "ignored", "skipped", "failed"):
-                actions.append("upload")
-            if act["status"] in ("new", "backlog", "ignored", "skipped", "failed"):
-                actions.append("skip")
-            act["actions"] = actions
+        # edit links come from the newest 'processed' event of each activity
+        edit_urls: dict = {}
+        for ev in self.state.events(uid, 200):  # newest first
+            if ev["kind"] == "processed" and ev["data"].get("edit_url"):
+                edit_urls.setdefault(str(ev["data"].get("activity_id")), ev["data"]["edit_url"])
+        activities = [self._activity_view(user, a, edit_urls) for a in self.state.recent_activities(uid, 30)]
         return {
             "uid": uid,
             "channel": user.get("channel") or "telegram",
             "lang": user.get("lang") or "en",
-            "osm": {"linked": bool(user.get("osm_access_token")), "name": user.get("osm_name")},
+            "osm": {"linked": bool(user.get("osm_access_token")), "name": user.get("osm_name") or None},
             "garmin": {
                 "linked": bool(user.get("garmin_linked")),
-                "name": user.get("garmin_name"),
-                "failing": False,  # could track recent failures if needed
+                "name": user.get("garmin_name") or None,
+                "failing": bool(self.state.get_meta(f"garmin_fail:{uid}")),
             },
             "settings": {
                 "auto": bool(user.get("auto")),
@@ -379,7 +382,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             },
             "type_options": list(TYPE_GROUPS.keys()),
             "delay_minutes": self.cfg.upload_delay_minutes,
-            "counts": counts,
+            "counts": self.state.counts(uid),
             "activities": activities,
             "events": self.state.events(uid, 30),
         }

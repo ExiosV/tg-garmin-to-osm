@@ -8,7 +8,7 @@ from .ingest import serve as serve_ingest
 from .garmin import GarminClient, user_token_dir
 from .osm import Osm, OsmError
 from .redact import redact
-from .runner import Runner, cycle, handle_updates, ingest_garmin_link, ingest_osm_link, run_forever
+from .runner import Runner, cycle, handle_updates, ingest_garmin_link, ingest_osm_link
 from .state import State
 from .telegram import Telegram
 
@@ -39,13 +39,15 @@ def _check_osm(cfg: Config, state: State) -> None:
             print(f"osm (user {user['user_id']}): token error:", redact(e))
 
 
-def _check(cfg: Config, tg: Telegram, state: State) -> None:
+def _check(cfg: Config, tg: Telegram | None, state: State) -> None:
+    if not tg:
+        print("bot: TELEGRAM_BOT_TOKEN is not set (running without Telegram)")
     try:
-        me = tg.whoami()
-        print("bot:", me.get("username"))
+        if tg:
+            print("bot:", tg.whoami().get("username"))
     except Exception as e:
         print("bot: error:", redact(e))
-    if cfg.operator_chat:
+    if tg and cfg.operator_chat:
         try:
             chat = tg.chat_info(cfg.operator_chat)
             print("operator chat:", chat.get("title") or chat.get("first_name"), "| type:", chat.get("type"))
@@ -54,7 +56,7 @@ def _check(cfg: Config, tg: Telegram, state: State) -> None:
     else:
         print("operator chat: TELEGRAM_CHAT_ID is not set (service warnings disabled)")
     try:
-        url = tg.webhook_info().get("url") or ""
+        url = (tg.webhook_info().get("url") or "") if tg else ""
         print("webhook:", url or "(none)")
         if url:
             print("warning: a webhook is set; getUpdates will not receive updates until it is removed")
@@ -86,7 +88,7 @@ def main() -> None:
         if cmd == "once":
             if tg:
                 handle_updates(cfg, tg, state, wait=0)
-            print("cycle:", cycle(cfg, tg or Telegram("", cfg.api_base), state))
+            print("cycle:", cycle(cfg, tg, state))
             return
         if cmd == "backfill":
             run_backfill(cfg, tg, state, args.since, args.dry_run, args.user)
@@ -94,7 +96,8 @@ def main() -> None:
         if cfg.ingest_token:
             serve_ingest(cfg.ingest_port, cfg.ingest_token,
                          lambda uid, tokens: ingest_garmin_link(cfg, tg, state, uid, tokens),
-                         lambda uid, token, name: ingest_osm_link(cfg, tg, state, uid, token, name),
+                         lambda uid, token, name, osm_uid=None: ingest_osm_link(cfg, tg, state, uid, token,
+                                                                                name, osm_uid),
                          cfg, state, runner)
             log.info("ingest API listening on :%s", cfg.ingest_port)
         runner.run_forever()

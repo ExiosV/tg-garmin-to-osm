@@ -73,6 +73,11 @@ class _Osm:
     def user_name(self):
         return "osmuser"
 
+    def user_details(self):
+        """A stable numeric id per token, so two fake users never share an OSM account."""
+        import zlib
+        return zlib.crc32(str(self.token).encode()) or 1, "osmuser"
+
     def upload_gpx(self, data, description, tags="", visibility="identifiable"):
         if self.upload_error:
             raise self.upload_error
