@@ -932,3 +932,29 @@ def test_run_forever_survives_getupdates_exception(tmp_path, monkeypatch):
 
     # No crash, loop would continue
     assert call_count["n"] >= 1
+
+def test_activity_upload_without_track_returns_422(tmp_path, monkeypatch):
+    """A Garmin file with no track points (walks often have none): 422 with a reason, an event,
+    and an attempt recorded so the auto-retry stops after MAX_ATTEMPTS."""
+    c, st, runner, server, port = make_test_server(tmp_path)
+    link_user(st, uid=42, garmin=True, osm=True)
+    st.insert_activity(42, "101", "Walk", "walking", 100, 3.0, "new")
+    garmin = _Garmin(activities=[act(101, name="Walk")], gpx=b"<gpx version='1.1'><trk/></gpx>")
+    import tg_garmin_to_osm.runner as runner_mod
+    import tg_garmin_to_osm.garmin as garmin_mod
+    import tg_garmin_to_osm.osm as osm_mod
+    monkeypatch.setattr(osm_mod, "Osm", _Osm)
+    monkeypatch.setattr(ingest_mod, "Osm", _Osm)
+    monkeypatch.setattr(runner_mod, "GarminClient", lambda token_dir: garmin)
+    monkeypatch.setattr(garmin_mod, "GarminClient", lambda token_dir: garmin)
+    try:
+        code, body = post(port, "/api/users/42/activities/101/upload", "SECRETTOKEN1", {})
+        assert code == 422
+        assert body["error"] == "upload_failed"
+        assert "track point" in body["reason"]
+        row = st.activity(42, "101")
+        assert row["attempts"] == 1 and row["last_error"]
+        assert row["status"] in ("new", "failed")
+        assert any(e["kind"] == "upload_failed" for e in st.events(42))
+    finally:
+        server.shutdown()

@@ -6,6 +6,7 @@ import threading
 import time
 
 from . import gpx as gpxmod
+from .gpx import GpxError
 from . import i18n
 from . import osm as osmmod
 from .config import TYPE_GROUPS, Config, VISIBILITIES, expand_types
@@ -162,7 +163,16 @@ def upload_one(cfg: Config, garmin: GarminClient, osm: Osm, state: State, user: 
     try:
         data = garmin.download_gpx(aid)
         gpxmod.validate_gpx(data)
-    except Exception as e:  # Garmin-side or file problem: do not burn an attempt, retry on the next scan
+    except (GpxError, ValueError) as e:
+        # File can't be converted to a valid trace: mark as failed, don't retry forever
+        state.record_failure(uid, aid, redact(e), MAX_ATTEMPTS)
+        _notify(cfg, tg, state, user, "upload_failed",
+                {"activity_id": aid, "name": row["name"] or aid, "error": redact(e)},
+                "upload_failed_final", {"lang": lang, "name": html.escape(row["name"] or aid),
+                                        "n": MAX_ATTEMPTS, "err": redact(e)})
+        log.error("garmin download failed for %s/%s: %s", uid, aid, redact(e))
+        return 0
+    except Exception as e:  # Garmin-side problem: do not burn an attempt, retry on the next scan
         if is_auth_error(e) or api_is_auth_error(e):
             if hasattr(garmin, "reset"):
                 garmin.reset()

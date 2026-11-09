@@ -146,13 +146,18 @@ def test_upload_ready_respects_delay(tmp_path, monkeypatch):
     assert garmin.downloads == [] and st.activity(42, "101")["status"] == "new"
 
 
-def test_upload_bad_gpx_does_not_burn_attempt(tmp_path, monkeypatch):
+def test_upload_bad_gpx_burns_an_attempt_then_fails(tmp_path, monkeypatch):
+    """A file without timestamped points will not fix itself: count attempts instead of retrying
+    on every scan forever (live case: Garmin answered with a ZIP, fitdecode gave 0 points)."""
     bad = b"<gpx><trk><trkpt lat='1' lon='2'/></trk></gpx>"  # no timestamps
     c, st, garmin, tg, u = seeded(tmp_path, monkeypatch, [act()], gpx=bad)
     assert upload_all(c, garmin, tg, st, u) == 0
     row = st.activity(42, "101")
-    assert row["status"] == "new" and row["attempts"] == 0
-    assert tg.sent == []  # garmin/file problems are quiet, retried on the next scan
+    assert row["attempts"] == 1 and row["last_error"]
+    for _ in range(runner_mod.MAX_ATTEMPTS - 1):
+        upload_all(c, garmin, tg, st, u)
+    assert st.activity(42, "101")["status"] == "failed"
+    assert any("Не смог загрузить" in t for _, t in tg.sent)  # final failure is reported
 
 
 def test_upload_permanent_osm_error_fails_after_three(tmp_path, monkeypatch):
