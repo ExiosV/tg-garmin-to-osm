@@ -459,7 +459,7 @@ def test_link_command_sends_site(tmp_path):
     tg = _Tg()
     assert runner_mod._handle_message(c, tg, st, msg("/link")) is True
     chat, text = tg.sent[0]
-    assert "https://garmin-osm.exiosv.com" in text and "Telegram" in text
+    assert "https://garmin-osm.exiosv.com/ru/telegram" in text and "Telegram" in text
 
 
 def test_login_fallback_flow_still_works(tmp_path, monkeypatch):
@@ -555,7 +555,8 @@ def test_garminkey_bad_key_unlinks(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, "GarminApiClient", _Boom)
     monkeypatch.setattr(runner_mod.Osm, "user_name", lambda self: "")
     runner_mod._handle_command(c, tg, st, msg("/garminkey BADKEY123456"), "/garminkey", "BADKEY123456")
-    assert st.user(42)["garmin_linked"] == 0
+    assert st.user(42)["garmin_linked"] == 1  # the existing link survives a rejected key
+    assert st.user(42)["garmin_api_key"] is None
     assert any("не принял" in t or "rejected" in t for _, t in tg.sent)
 
 
@@ -653,7 +654,7 @@ def test_callback_osm_menu_site_and_code(tmp_path, monkeypatch):
     assert runner_mod._handle_callback(c, tg, st, cb(onb.CB_OSM_MENU)) is True
     assert any("openstreetmap" in t.lower() for _, t in tg.sent[-1:])
     assert runner_mod._handle_callback(c, tg, st, cb(onb.CB_OSM_SITE)) is True
-    assert any("garmin-osm.exiosv.com" in t for _, t in tg.sent[-1:])
+    assert any("garmin-osm.exiosv.com/ru/telegram" in t for _, t in tg.sent[-1:])
     assert runner_mod._handle_callback(c, tg, st, cb(onb.CB_OSM_CODE)) is True
     assert any("oauth2/authorize" in t for _, t in tg.sent[-1:])
     assert runner_mod.PENDING[42]["stage"] == onb.STAGE_OSM_CODE

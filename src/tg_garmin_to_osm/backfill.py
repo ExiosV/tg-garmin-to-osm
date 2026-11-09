@@ -9,7 +9,7 @@ import time
 from . import gpx as gpxmod
 from . import i18n
 from .config import Config
-from .garmin import GarminClient, user_token_dir
+from .garmin import GarminClient
 from .osm import Osm, OsmError
 from .redact import redact
 from .runner import activity_start_ts, expand_types_user, is_ride, summary_row, upload_one, user_vis
@@ -75,7 +75,7 @@ def _trace_dates(traces: list) -> set:
     return out
 
 
-def run_backfill_user(cfg: Config, tg: Telegram, state: State, user: dict, since: str,
+def run_backfill_user(cfg: Config, tg: Telegram | None, state: State, user: dict, since: str,
                       dry_run: bool = False) -> None:
     uid = user["user_id"]
     lang = user.get("lang") or ""
@@ -85,7 +85,8 @@ def run_backfill_user(cfg: Config, tg: Telegram, state: State, user: dict, since
     if not user.get("osm_access_token"):
         print(i18n.text(lang, "backfill_no_login"))
         return
-    garmin = GarminClient(user_token_dir(cfg.garmin_token_dir, uid))
+    from .runner import garmin_client_for
+    garmin = garmin_client_for(cfg, user)
     osm = Osm(cfg.osm_base, user["osm_access_token"])
     added, flipped = scan_history(cfg, garmin, state, user, since)
     rows = state.rides_by_status(uid, "new")
@@ -121,11 +122,11 @@ def run_backfill_user(cfg: Config, tg: Telegram, state: State, user: dict, since
     print(summary)
     print(f"user {uid}: history +{added} rows, {flipped} backlog rides flipped to 'new'; "
           f"existing OSM traces: {len(traces)}")
-    if not dry_run and (uploaded or failed):
+    if not dry_run and (uploaded or failed) and tg and user.get("chat_id"):
         tg.send(user["chat_id"], summary)
 
 
-def run_backfill(cfg: Config, tg: Telegram, state: State, since: str, dry_run: bool = False,
+def run_backfill(cfg: Config, tg: Telegram | None, state: State, since: str, dry_run: bool = False,
                  user_id: int | None = None) -> None:
     users = [u for u in state.garmin_osm_users()
              if user_id is not None and u["user_id"] == user_id

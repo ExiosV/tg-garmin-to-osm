@@ -103,6 +103,28 @@ All commands work for any user in a private chat:
   flow.
 - Docker: `python:3.12-slim`, `ENTRYPOINT ["python", "-m", "tg_garmin_to_osm"]`, `CMD ["run"]`.
 
+## Web accounts (no Telegram)
+
+The service can be used without a Telegram account via the web site **https://garmin-osm.exiosv.com**.
+The site drives sign-up and all settings through a cluster-internal JSON API served by this bot process
+(on `INGEST_PORT`, default 8080, bearer token `INGEST_TOKEN`). The bot stays the single writer of its
+SQLite database; the web site holds no user data, only a signed session cookie with the internal `uid`.
+
+- **Identity**: web users sign in with OpenStreetMap (OAuth 2). The OSM numeric `osm_uid` becomes
+  `user_id = -osm_uid` (negative; Telegram users have positive ids). `chat_id = NULL`, `channel = 'web'`.
+- **Garmin linking**: Personal API key only (entered on the site). The key is verified live
+  (`recent_activities(3)`); `ownerId`/`ownerDisplayName` are stored for reference.
+- **All bot commands mirrored**: `/sync`, `/upload <id>`, `/skip <id>`, `/auto`, `/types`, `/visibility`,
+  `/lang`, `/unlink` — same semantics, same functions reused.
+- **Per-activity actions**: the API returns `"actions": ["upload", "skip"]` where applicable.
+- **Notifications**: written as event rows (`events` table) for the web UI; Telegram messages sent only
+  when `chat_id` is set (Telegram users).
+- **Cap**: `MAX_WEB_USERS` env (default 100) limits creation of new web accounts.
+- **Running without Telegram**: if `TELEGRAM_BOT_TOKEN` is empty, the bot runs without Telegram at all;
+  `getUpdates` errors are caught and logged, Garmin/OSM cycles continue.
+
+See `docs/internal-api.md` for the full API contract (routes, payloads, error codes, locking model).
+
 ## Known limits
 
 - One Garmin account and one OSM account per Telegram user; a shared cluster deployment serves
