@@ -6,11 +6,13 @@ import threading
 import time
 
 from . import gpx as gpxmod
+from .gpx import GpxError
 from . import i18n
 from . import osm as osmmod
 from .config import TYPE_GROUPS, Config, VISIBILITIES, expand_types
 from .garmin import GarminClient, course_id, is_auth_error, user_token_dir
-from .garmin_api import GarminApiClient, GarminApiError, is_auth_error as api_is_auth_error
+from .garmin_api import GarminApiClient, GarminApiError, GarminFileError
+from .garmin_api import is_auth_error as api_is_auth_error
 from . import onboarding
 from .osm import Osm, OsmError
 from .redact import add_secret, redact
@@ -20,6 +22,7 @@ from .telegram import Telegram, UPDATES_OFFSET
 log = logging.getLogger("tg_garmin_to_osm")
 
 MAX_ATTEMPTS = 3  # permanent OSM-side upload rejections before a ride goes to 'failed'
+TRACE_GONE_SECONDS = 2 * 60 * 60  # an uploaded trace missing on OSM after this long is gone
 
 # Module-level work lock shared by Runner and API handlers
 WORK_LOCK = threading.RLock()
@@ -162,7 +165,15 @@ def upload_one(cfg: Config, garmin: GarminClient, osm: Osm, state: State, user: 
     try:
         data = garmin.download_gpx(aid)
         gpxmod.validate_gpx(data)
-    except Exception as e:  # Garmin-side or file problem: do not burn an attempt, retry on the next scan
+    except (GpxError, GarminFileError, ValueError) as e:
+        # File problem (no track, corrupt archive): fail at once and retry never. The site shows the
+        # reason; no Telegram message, because "N attempts" would be misleading here.
+        state.record_failure(uid, aid, "no_track: " + redact(e), 1)
+        _notify(cfg, tg, state, user, "upload_failed",
+                {"activity_id": aid, "name": row["name"] or aid, "error": redact(e)})
+        log.error("garmin file problem for %s/%s: %s", uid, aid, redact(e))
+        return 0
+    except Exception as e:  # Garmin-side problem: do not burn an attempt, retry on the next scan
         if is_auth_error(e) or api_is_auth_error(e):
             if hasattr(garmin, "reset"):
                 garmin.reset()
@@ -230,8 +241,18 @@ def check_pending(cfg: Config, tg: Telegram | None, state: State, user: dict) ->
         try:
             meta = osm.trace_meta(row["trace_id"])
         except OsmError as e:
-            if e.status != 404:  # 404 just means OSM has not made the trace visible yet
+            if e.status != 404:  # a 404 may just mean OSM has not made the trace visible yet
                 log.error("trace meta failed for %s: %s", row["trace_id"], redact(e))
+                continue
+            age = time.time() - (row.get("uploaded_ts") or 0)
+            if age > TRACE_GONE_SECONDS:
+                # The trace never appeared: it is gone (deleted or rejected), so stop polling.
+                error = "osm: trace not found on OSM after 2 hours"
+                state.record_failure(user["user_id"], row["activity_id"], error, 1)
+                _notify(cfg, tg, state, user, "upload_failed",
+                        {"activity_id": row["activity_id"], "name": row["name"],
+                         "trace_id": row["trace_id"], "error": error})
+                log.error("trace %s of user %s is gone after 2 hours", row["trace_id"], user["user_id"])
             continue
         if meta["pending"]:
             continue

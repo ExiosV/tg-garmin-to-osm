@@ -95,14 +95,15 @@ def test_fit_to_gpx_conversion(monkeypatch):
     class Frame:
         frame_type = fitdecode.FIT_FRAME_DATA
 
-        def __init__(self, values):
-            self.values = values
+        def __init__(self, values, name="record"):
+            self.values, self.name = values, name
 
-        def get_value(self, name):
-            return self.values.get(name)
+        def get_value(self, name, fallback=None):
+            return self.values.get(name, fallback)
 
     semilat = int(55.75 * (1 << 31) / 180)  # semicircles = degrees * 2^31 / 180
     frames = [
+        Frame({"file_id": 1}, name="file_id"),  # not a record: no position fields at all
         Frame({"position_lat": semilat, "position_long": int(37.61 * (1 << 31) / 180), "timestamp": __import__("datetime").datetime(2026, 11, 8, 6, 12, 34)}),
         Frame({"position_lat": None}),  # skipped
     ]
@@ -118,3 +119,93 @@ def test_fit_to_gpx_conversion(monkeypatch):
     assert 'lat="55.750000"' in gpx.decode() and "lon=" in gpx.decode()
     assert "<time>2026-11-08T06:12:34Z</time>" in gpx.decode()
     assert gpx.decode().count("<trkpt") == 1
+
+
+def _zip_with(name: str, payload: bytes) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(name, payload)
+    return buf.getvalue()
+
+
+def test_unwrap_fit_returns_plain_bytes():
+    assert garmin_api._unwrap_fit(b"\x0eFITDATA") == b"\x0eFITDATA"
+
+
+def test_unwrap_fit_extracts_the_member():
+    z = _zip_with("25011296492_ACTIVITY.fit", b"RAWFIT")
+    assert garmin_api._unwrap_fit(z) == b"RAWFIT"
+
+
+def test_unwrap_fit_rejects_a_zip_without_fit():
+    with pytest.raises(ValueError, match="no .fit file"):
+        garmin_api._unwrap_fit(_zip_with("readme.txt", b"x"))
+
+
+def test_unwrap_fit_rejects_a_corrupt_zip():
+    with pytest.raises(garmin_api.GarminFileError, match="corrupt ZIP"):
+        garmin_api._unwrap_fit(b"PK\x03\x04not a real zip")
+
+
+def test_unwrap_fit_rejects_several_fit_members():
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.fit", b"one")
+        zf.writestr("b.fit", b"two")
+    with pytest.raises(garmin_api.GarminFileError, match="2 .fit files"):
+        garmin_api._unwrap_fit(buf.getvalue())
+
+
+def test_fit_to_gpx_wraps_reader_errors(monkeypatch):
+    import fitdecode
+    from fitdecode.exceptions import FitError
+
+    class BoomReader:
+        def __init__(self, data):
+            raise FitError("bad header")
+
+    monkeypatch.setattr(fitdecode, "FitReader", BoomReader)
+    with pytest.raises(garmin_api.GarminFileError, match="corrupt FIT"):
+        garmin_api.fit_to_gpx(b"garbage")
+
+
+def test_fit_to_gpx_wraps_other_reader_errors(monkeypatch):
+    import fitdecode
+
+    class BoomReader:
+        def __init__(self, data):
+            raise ValueError("truncated")
+
+    monkeypatch.setattr(fitdecode, "FitReader", BoomReader)
+    with pytest.raises(garmin_api.GarminFileError, match="cannot read FIT"):
+        garmin_api.fit_to_gpx(b"garbage")
+
+
+def test_download_gpx_converts_a_zip_wrapped_fit(monkeypatch):
+    """Garmin answers the FIT download with a ZIP for many activities (live: walking, gravel)."""
+    z = _zip_with("501_ACTIVITY.fit", b"RAWFIT")
+    seen = {}
+
+    def fake_post(url, headers=None, timeout=None):
+        return _Resp(text="BEARERTOKEN1")
+
+    def fake_get(url, headers=None, timeout=None):
+        if "/download-service/export/gpx/" in url:
+            return _Resp(status=404, text="no gpx")
+        return _Resp(content=z)
+
+    def fake_convert(fit):
+        seen["fit"] = fit
+        return b"<gpx>converted</gpx>"
+
+    monkeypatch.setattr(garmin_api.requests, "post", fake_post)
+    monkeypatch.setattr(garmin_api.requests, "get", fake_get)
+    monkeypatch.setattr(garmin_api, "fit_to_gpx", fake_convert)
+    assert GarminApiClient("KEY1").download_gpx(501) == b"<gpx>converted</gpx>"
+    assert seen["fit"] == b"RAWFIT"
