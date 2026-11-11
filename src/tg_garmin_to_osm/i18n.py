@@ -117,6 +117,9 @@ MESSAGES = {
                             "уже были на OSM (пропущены) {skipped}, ошибок {failed}.",
         "backfill_no_login": "Нет OSM-логина — бэкфилл невозможен.",
         "backfill_no_garmin": "Нет Garmin-логина — бэкфилл невозможен.",
+        "backfill_progress": "📦 Бэкфилл: {done} из {total} (загружено {uploaded})...",
+        "onb_backfill_started": "📦 Поехали: заливаю всю историю в фоне, прогресс пришлю сюда.",
+        "onb_backfill_already": "⏳ Бэкфилл уже идёт — дождитесь завершения.",
     },
     EN: {
         "start": (
@@ -225,6 +228,10 @@ MESSAGES = {
                             "already on OSM (skipped) {skipped}, failed {failed}.",
         "backfill_no_login": "No OSM login — backfill impossible.",
         "backfill_no_garmin": "No Garmin login — backfill impossible.",
+        "backfill_progress": "📦 Backfill: {done} of {total} ({uploaded} uploaded)...",
+        "onb_backfill_started": "📦 Off we go: uploading your full history in the background, "
+                                "progress messages follow.",
+        "onb_backfill_already": "⏳ A backfill is already running — wait for it to finish.",
     },
 }
 

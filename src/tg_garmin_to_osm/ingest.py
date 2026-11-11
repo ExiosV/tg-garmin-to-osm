@@ -15,6 +15,7 @@ from . import osm as osmmod
 from .config import TYPE_GROUPS, VISIBILITIES, Config
 from .garmin import user_token_dir
 from .osm import Osm
+from .metrics import METRICS
 from .redact import redact
 from .runner import (WORK_LOCK, Runner, apply_garmin_key_pure, garmin_client_for, ingest_garmin_link,
                      ingest_osm_link, summary_row, upload_one, user_cycle, user_vis)
@@ -92,6 +93,14 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/ping":
             return self._reply(200, {"ok": True})
+        if self.path == "/metrics":
+            body = METRICS.render(self.cfg.data_dir, self.cfg).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/api/users/"):
             if not self._authorized():
                 return self._reply(401, {"error": "unauthorized"})
@@ -101,6 +110,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             user = self.state.user(uid)
             if not user:
                 return self._reply(404, {"error": "not_found"})
+            if self.path == f"/api/users/{uid}/backfill":
+                from .backfill import backfill_status
+                return self._reply(200, {"ok": True, "status": backfill_status(self.state, uid)})
             return self._reply(200, self._build_user_response(user))
         return self._reply(404, {"error": "not found"})
 
@@ -119,6 +131,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if not tokens.strip().startswith("{"):
                     raise ValueError("tokens must be the garmin_tokens.json content")
                 ingest_garmin_link(self.cfg, self.runner.tg, self.state, uid, tokens)
+                METRICS.inc("garmin_links_total", method="site_tokens")
                 return self._reply(200, {"ok": True})
 
             if self.path == "/ingest/osm":
@@ -213,6 +226,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self._handle_settings(uid, body)
             if self.path == f"/api/users/{uid}/sync":
                 return self._handle_sync(uid)
+            if self.path == f"/api/users/{uid}/backfill":
+                return self._handle_backfill_start(uid)
             aid = self._parse_activity_id(self.path)
             if aid and self.path.endswith("/upload"):
                 return self._handle_activity_upload(uid, aid)
@@ -259,6 +274,18 @@ class ApiHandler(BaseHTTPRequestHandler):
         for column, val in changes.items():
             self.state.set_setting(uid, column, val)
         return self._reply(200, {"ok": True})
+
+    def _handle_backfill_start(self, uid: int) -> None:
+        """Start "upload ALL history + keep auto-uploading new rides" in a background thread."""
+        user = self.state.user(uid)
+        if not user["garmin_linked"] or not user["osm_access_token"]:
+            return self._reply(409, {"error": "not_ready"})
+        from .backfill import start_user_backfill
+        res = start_user_backfill(self.cfg, self.runner.tg, self.state, user)
+        if not res["ok"]:
+            return self._reply(409, res)
+        METRICS.inc("backfills_started_total")
+        return self._reply(200, {"ok": True, "status": res["status"]})
 
     def _handle_sync(self, uid: int) -> None:
         user = self.state.user(uid)

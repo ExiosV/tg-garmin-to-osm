@@ -1056,3 +1056,65 @@ def test_activity_upload_corrupt_file_is_no_track(tmp_path, monkeypatch, content
         assert row["last_error"].startswith("no_track: ")
     finally:
         server.shutdown()
+
+
+# -- "upload everything" (backfill) API + metrics -----------------------------------------------------
+
+def test_backfill_start_and_status(tmp_path):
+    import threading
+    c, st, runner, server, port = make_test_server(tmp_path)
+    st.touch_user(11, -1011, "en")
+    st.set_garmin_key(11, "KEYUSER11")
+    st.save_osm_user(11, -1011, "T11", "u11")
+
+    import threading as _threading
+    import tg_garmin_to_osm.backfill as bf
+    release = _threading.Event()
+    started = []
+
+    def fake_target(cfg, tg, state, user):
+        started.append(user["user_id"])
+        release.wait(timeout=10)  # stay alive until the test finishes
+
+    bf._thread_target = fake_target
+    try:
+        code, body = post(port, "/api/users/11/backfill", "SECRETTOKEN1", {})
+        assert code == 200 and body["ok"] is True
+        assert started == [11]
+        assert st.get_meta("backfill_running:11") == "1"
+        code, body = post(port, "/api/users/11/backfill", "SECRETTOKEN1", {})
+        assert code == 409 and body["error"] == "already_running"
+        code, body = get(port, "/api/users/11/backfill", "SECRETTOKEN1")
+        assert code == 200 and body["status"]["running"] is True
+        release.set()
+    finally:
+        release.set()
+        if 11 in bf._BACKFILL_THREADS:
+            bf._BACKFILL_THREADS[11].join(timeout=10)
+        bf._BACKFILL_THREADS.pop(11, None)
+        st.delete_meta("backfill_running:11")
+
+
+def test_backfill_requires_both_links(tmp_path):
+    c, st, runner, server, port = make_test_server(tmp_path)
+    st.touch_user(12, -1012)
+    code, body = post(port, "/api/users/12/backfill", "SECRETTOKEN1", {})
+    assert code == 409 and body["error"] == "not_ready"
+
+
+def test_metrics_endpoint(tmp_path):
+    c, st, runner, server, port = make_test_server(tmp_path)
+    st.touch_user(21, -1021, "en")
+    st.set_garmin_key(21, "KEY21")
+    st.save_osm_user(21, -1021, "T21", "mapper")
+    st.insert_activity(21, "501", "Утро", "cycling", 100, 25.0, "done")
+    st.add_event(21, "uploaded", {"activity_id": "501"})
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as r:
+        text = r.read().decode()
+    assert "users_total" in text and "activities_by_status" in text
+    assert 'events_total{kind="uploaded"}' in text
+    assert 'channel="telegram"' in text or 'channel="web"' in text
+    assert "db_size_bytes" in text and "process_rss_bytes" in text
+    assert "limit_storage_bytes" in text and "limit_web_users" in text
+    assert "events_total" in text
+    assert "SECRETTOKEN1" not in text and "KEY21" not in text  # no secrets in metrics

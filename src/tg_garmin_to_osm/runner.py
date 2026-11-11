@@ -14,6 +14,7 @@ from .garmin import GarminClient, course_id, is_auth_error, user_token_dir
 from .garmin_api import GarminApiClient, GarminApiError, GarminFileError
 from .garmin_api import is_auth_error as api_is_auth_error
 from . import onboarding
+from .metrics import METRICS
 from .osm import Osm, OsmError
 from .redact import add_secret, redact
 from .state import State
@@ -197,6 +198,7 @@ def upload_one(cfg: Config, garmin: GarminClient, osm: Osm, state: State, user: 
                                             "n": MAX_ATTEMPTS, "err": redact(e)})
         return 0
     state.set_status(uid, aid, "uploaded", trace_id)
+    METRICS.inc("uploads_total")
     log.info("user %s: uploaded activity %s as OSM trace %s", uid, aid, trace_id)
     if notify:
         _notify(cfg, tg, state, user, "uploaded",
@@ -352,6 +354,7 @@ def apply_garmin_key_pure(cfg: Config, state: State, uid: int, key: str) -> tupl
     state.set_garmin_key(uid, key)
     state.set_garmin_owner(uid, owner_id, garmin_name)  # a new key may be another Garmin account
     state.delete_meta(f"garmin_fail:{uid}")  # a fresh, working key
+    METRICS.inc("garmin_linked_total")  # counted after a verified key
     return True, garmin_name, None, len(acts)
 
 
@@ -435,8 +438,22 @@ def _handle_callback(cfg: Config, tg: Telegram, state: State, cb: dict) -> bool:
         tg.send(chat_id, _status_text(cfg, state, state.user(uid) or user,
                                       lambda key, **kw: i18n.text(lang, key, **kw)))
     elif data == onboarding.CB_BACK:
-        text, rows = onboarding.main_menu_rows(lang)
+        text, rows = onboarding.main_menu_rows(lang, bool(user["garmin_linked"] and user["osm_access_token"]))
         tg.buttons(chat_id, text, rows)
+    elif data == onboarding.CB_BACKFILL:
+        if not (user["garmin_linked"] and user["osm_access_token"]):
+            tg.send(chat_id, T("sync_no_garmin"))
+            return
+        text, rows = onboarding.backfill_confirm_rows(lang)
+        tg.buttons(chat_id, text, rows)
+    elif data == onboarding.CB_BACKFILL_CONFIRM:
+        from .backfill import start_user_backfill
+        res = start_user_backfill(cfg, tg, state, state.user(uid) or user)
+        if res["ok"]:
+            METRICS.inc("backfills_started_total")
+            tg.send(chat_id, T("onb_backfill_started"))
+        else:
+            tg.send(chat_id, T("onb_backfill_already"))
     elif data == "onb:garmin:unlink":
         state.unlink_garmin(uid)
         tg.send(chat_id, T("unlink_done", what="garmin"))

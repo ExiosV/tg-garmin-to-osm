@@ -21,26 +21,41 @@ STAGE_GARMIN_KEY = "onb_garmin_key"
 STAGE_OSM_CODE = "osm_code"  # legacy stage id, reused from the /login fallback
 
 
-def main_menu_rows(lang: str):
-    """(text-key, rows) for the main onboarding menu."""
+CB_BACKFILL = "onb:backfill"
+CB_BACKFILL_CONFIRM = "onb:backfill:confirm"
+
+
+def main_menu_rows(lang: str, both_linked: bool = False):
+    """(text-key, rows) for the main onboarding menu. The upload-everything button appears only
+    for users with both accounts linked (it uploads ALL history and keeps auto-uploads on)."""
     if lang == "ru":
         rows = [
             [("🔗 Привязать Garmin", CB_GARMIN_START)],
             [("🗺 Привязать OSM", CB_OSM_MENU)],
-            [("📊 Мой статус", CB_STATUS)],
         ]
         text = ("Что делаем дальше? Всё можно пройти кнопками — команды вводить не нужно.\n"
                 "Garmin привязывается Personal API ключом (покажу, где его взять), OSM — через "
                 "сайт или код.")
+        if both_linked:
+            rows.append([("📦 Залить все старые + новые", CB_BACKFILL)])
+            text += ("\n\n📦 «Залить всё» загрузит ВСЕ ваши поездки за всю историю в OSM "
+                     "(уже залитые пропустит) и включит автозагрузку новых. Поездка попадает в OSM "
+                     "через ~10–20 минут после синхронизации часов.")
+        rows.append([("📊 Мой статус", CB_STATUS)])
     else:
         rows = [
             [("🔗 Link Garmin", CB_GARMIN_START)],
             [("🗺 Link OSM", CB_OSM_MENU)],
-            [("📊 My status", CB_STATUS)],
         ]
         text = ("What next? Everything is button-driven — no commands to type.\n"
                 "Garmin links with a Personal API key (I will show you where to get it), OSM via "
                 "the site or a code.")
+        if both_linked:
+            rows.append([("📦 Upload everything: old + new", CB_BACKFILL)])
+            text += ("\n\n📦 “Upload everything” sends ALL your past rides to OSM (already-uploaded "
+                     "ones are skipped) and keeps auto-uploading new ones. A ride reaches OSM "
+                     "~10–20 minutes after your watch syncs.")
+        rows.append([("📊 My status", CB_STATUS)])
     return text, rows
 
 
@@ -119,4 +134,20 @@ def osm_menu_rows(lang: str, linked: bool):
         if linked:
             text = "✅ OSM is already linked.\n\n" + text
             rows.append([("🚫 Unlink OSM", "onb:osm:unlink")])
+    return text, rows
+
+
+def backfill_confirm_rows(lang: str):
+    if lang == "ru":
+        text = ("📦 <b>Залить ВСЕ поездки за всю историю в OSM?</b>\n\n"
+                "Уже залитые будут пропущены (сверка по дате ±1 день). Новые будут грузиться сами. "
+                "Загрузка идёт в фоне, прогресс пришлю сообщениями. Время зависит от объёма "
+                "(~5–10 с на поездку).")
+        rows = [[("✅ Да, залить всё", CB_BACKFILL_CONFIRM)], [("⬅️ Назад", CB_BACK)]]
+    else:
+        text = ("📦 <b>Upload ALL rides from your entire history to OSM?</b>\n\n"
+                "Already-uploaded ones are skipped (date match ±1 day). New ones keep auto-uploading. "
+                "Runs in the background; I will message progress. Time depends on volume "
+                "(~5–10 s per ride).")
+        rows = [[("✅ Yes, upload everything", CB_BACKFILL_CONFIRM)], [("⬅️ Back", CB_BACK)]]
     return text, rows
