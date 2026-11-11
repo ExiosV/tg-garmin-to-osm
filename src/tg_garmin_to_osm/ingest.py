@@ -229,6 +229,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self._handle_sync(uid)
             if self.path == f"/api/users/{uid}/backfill":
                 return self._handle_backfill_start(uid)
+            if self.path == f"/api/users/{uid}/backfill/cancel":
+                from .backfill import cancel_backfill
+                cancel_backfill(self.state, uid)
+                METRICS.inc("backfills_cancelled_total")
+                return self._reply(200, {"ok": True})
             aid = self._parse_activity_id(self.path)
             if aid and self.path.endswith("/upload"):
                 return self._handle_activity_upload(uid, aid)

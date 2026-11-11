@@ -438,8 +438,14 @@ def _handle_callback(cfg: Config, tg: Telegram, state: State, cb: dict) -> bool:
         tg.send(chat_id, _status_text(cfg, state, state.user(uid) or user,
                                       lambda key, **kw: i18n.text(lang, key, **kw)))
     elif data == onboarding.CB_BACK:
-        text, rows = onboarding.main_menu_rows(lang, bool(user["garmin_linked"] and user["osm_access_token"]))
+        text, rows = onboarding.main_menu_rows(lang, bool(user["garmin_linked"] and user["osm_access_token"]),
+                                               bool(state.get_meta(f"backfill_running:{uid}")))
         tg.buttons(chat_id, text, rows)
+    elif data == onboarding.CB_BACKFILL_STOP:
+        from .backfill import cancel_backfill
+        cancel_backfill(state, uid)
+        tg.send(chat_id, T("backfill_stopping"))
+        METRICS.inc("backfills_cancelled_total")
     elif data == onboarding.CB_BACKFILL:
         if not (user["garmin_linked"] and user["osm_access_token"]):
             tg.send(chat_id, T("sync_no_garmin"))

@@ -125,3 +125,54 @@ def test_scan_history_flips_ignored_after_types_widened(tmp_path, monkeypatch):
     assert added == 0 and flipped == 1
     assert st.activity(42, "1")["status"] == "new"  # the walk joins the next upload pass
     assert st.activity(42, "2")["status"] == "new"
+
+
+def test_cancel_parks_remaining_and_thread_exits(tmp_path, monkeypatch):
+    """Cancel: the thread stops uploading and parks the rest back to backlog."""
+    import threading as _threading
+    history = [gact(i, f"Ride {i}", "cycling", f"2026-09-{i:02d} 06:00:00") for i in range(1, 6)]
+    c, st, garmin, tg, u = seeded_history(tmp_path, monkeypatch, history)
+    monkeypatch.setattr(bf, "garmin_client_for", lambda cfg_, user: garmin)  # the thread must use the fake
+    bf.scan_history(c, garmin, st, u, since="2026-08-22")
+    rows = st.rides_by_status(42, "new")
+    assert len(rows) == 5
+
+    uploads = []
+
+    def fake_upload_one(cfg_, garmin_, osm_, state_, user_, row_, tg_, vis_, notify=True):
+        uploads.append(row_["activity_id"])
+        bf.cancel_backfill(state_, user_["user_id"])  # cancel after the first upload
+        state_.set_status(user_["user_id"], row_["activity_id"], "uploaded", 900 + len(uploads))
+        return 900 + len(uploads)
+
+    monkeypatch.setattr(bf, "upload_one", fake_upload_one)
+
+    done = _threading.Event()
+
+    def fake_target():
+        bf._thread_target(cfg=c, tg=tg, state=st, user=u)
+
+    # run the real thread body with the cancel-after-first-upload fake
+    th = _threading.Thread(target=fake_target)
+    th.start()
+    th.join(timeout=15)
+    assert not th.is_alive()
+    assert uploads == ["1"]  # only one upload happened before the cancel
+    rest = [st.activity(42, str(i))["status"] for i in range(2, 6)]
+    assert rest == ["backlog", "backlog", "backlog", "backlog"]  # parked back
+    assert st.activity(42, "1")["status"] == "uploaded"
+    assert st.get_meta("backfill_running:42") is None
+    assert any("остановлен" in t or "stopped" in t for _, t in tg.sent)
+
+
+def test_fresh_start_clears_cancel_flag(tmp_path, monkeypatch):
+    c, st, garmin, tg, u = seeded_history(tmp_path, monkeypatch, [])
+    st.set_meta("backfill_cancel:42", "1")
+    from tg_garmin_to_osm.backfill import start_user_backfill
+    import tg_garmin_to_osm.backfill as bf
+    bf._thread_target = lambda cfg, tg, state, user: None
+    res = start_user_backfill(c, tg, st, st.user(42))
+    assert res["ok"] is True
+    assert st.get_meta("backfill_cancel:42") is None
+    bf._BACKFILL_THREADS.pop(42, None)
+    st.delete_meta("backfill_running:42")

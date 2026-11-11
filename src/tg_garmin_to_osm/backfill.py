@@ -12,6 +12,7 @@ from .config import Config
 from .garmin import GarminClient
 from .osm import Osm, OsmError
 from .redact import redact
+from .metrics import METRICS
 from .runner import (
     activity_start_ts, expand_types_user, garmin_client_for, is_ride, summary_row,
     upload_one, user_vis,
@@ -27,15 +28,16 @@ FULL_HISTORY_PAGES = 50  # the user-triggered "upload everything" goes up to 500
 UPLOAD_PAUSE_S = 4.0  # a one-off burst of ~dozens of uploads still stays polite toward OSM
 
 
-def scan_history(cfg: Config, garmin: GarminClient, state: State, user: dict, since: str) -> tuple:
+def scan_history(cfg: Config, garmin: GarminClient, state: State, user: dict,
+                 since: str | None = None) -> tuple:
     """Remember every activity from `since` (YYYY-MM-DD, UTC) that the scans have not seen yet.
 
     Rides matching the user's types become 'new', everything else 'ignored'; backlog rides inside
     the window are flipped to 'new' (the first-scan backlog was never meant to hold rides forever).
     Returns (added, flipped)."""
     uid = user["user_id"]
-    since_ts = int(datetime.datetime.strptime(since, "%Y-%m-%d")
-                   .replace(tzinfo=datetime.timezone.utc).timestamp())
+    since_ts = (int(datetime.datetime.strptime(since, "%Y-%m-%d")
+                    .replace(tzinfo=datetime.timezone.utc).timestamp()) if since else 0)
     types = expand_types_user(user, cfg)
     added = flipped = 0
     for page_no in range(MAX_PAGES):
@@ -151,6 +153,11 @@ _BACKFILL_THREADS: dict[int, threading.Thread] = {}
 _BACKFILL_LOCK = threading.Lock()
 
 
+def cancel_backfill(state: State, uid: int) -> None:
+    """Ask the background thread to stop; it parks the unprocessed rides back to backlog."""
+    state.set_meta(f"backfill_cancel:{uid}", "1")
+
+
 def backfill_status(state: State, uid: int) -> dict:
     running = _BACKFILL_THREADS.get(uid) is not None and _BACKFILL_THREADS[uid].is_alive()
     return {
@@ -176,6 +183,7 @@ def start_user_backfill(cfg: Config, tg: Telegram | None, state: State, user: di
                                   name=f"backfill-{uid}", kwargs=dict(cfg=cfg, tg=tg, state=state, user=user))
         _BACKFILL_THREADS[uid] = thread
         state.set_meta(f"backfill_running:{uid}", "1")
+        state.delete_meta(f"backfill_cancel:{uid}")  # a fresh start ignores a stale cancel flag
         thread.start()
     return {"ok": True, "status": backfill_status(state, uid)}
 
@@ -190,7 +198,7 @@ def _thread_target(cfg: Config, tg: Telegram | None, state: State, user: dict) -
         garmin = garmin_client_for(cfg, state.user(uid) or user)
         osm = Osm(cfg.osm_base, user["osm_access_token"])
         # every page of history, deduped against the user's OSM traces
-        added, flipped = _scan_all(cfg, garmin, state, user)
+        added, flipped = scan_history(cfg, garmin, state, user, since=None)
         rows = state.rides_by_status(uid, "new")
         try:
             traces = osm.user_traces()
@@ -208,7 +216,11 @@ def _thread_target(cfg: Config, tg: Telegram | None, state: State, user: dict) -
         state.set_meta(f"backfill_failed:{uid}", "0")
         state.delete_meta(f"backfill_error:{uid}")
         last_progress = time.time()
+        stopped = False
         for row in rows:  # oldest first
+            if state.get_meta(f"backfill_cancel:{uid}"):
+                stopped = True
+                break
             aid = row["activity_id"]
             ride_day = (datetime.datetime.fromtimestamp(row["start_ts"], datetime.timezone.utc).date()
                         if row["start_ts"] else None)
@@ -235,8 +247,17 @@ def _thread_target(cfg: Config, tg: Telegram | None, state: State, user: dict) -
                             done=uploaded + skipped + failed, total=total, uploaded=uploaded), silent=True)
                 except Exception:
                     pass
-        summary = i18n.text(lang, "backfill_summary", since="full history", uploaded=uploaded,
-                            skipped=skipped, failed=failed)
+        if stopped:  # park the unprocessed rides back to backlog: the cycle must not resume them
+            for row in rows[uploaded + skipped + failed:]:
+                if state.activity(uid, row["activity_id"])["status"] == "new":
+                    state.set_status(uid, row["activity_id"], "backlog")
+        summary = i18n.text(lang, "backfill_stopped", uploaded=uploaded) if stopped else \
+            i18n.text(lang, "backfill_summary", since="full history", uploaded=uploaded,
+                      skipped=skipped, failed=failed)
+        if stopped:
+            state.add_event(uid, "backfill_stopped", {"uploaded": uploaded, "skipped": skipped,
+                                                      "failed": failed})
+            METRICS.inc("backfills_stopped_total")
         if tg is not None and user.get("chat_id"):
             try:
                 tg.send(user["chat_id"], summary)
@@ -256,34 +277,3 @@ def _thread_target(cfg: Config, tg: Telegram | None, state: State, user: dict) -
             _BACKFILL_THREADS.pop(uid, None)
         state.delete_meta(f"backfill_running:{uid}")
 
-
-def _scan_all(cfg: Config, garmin, state: State, user: dict) -> tuple:
-    """Every activity the user ever has: pages until exhausted (50 pages = 5000)."""
-    uid = user["user_id"]
-    types = expand_types_user(user, cfg)
-    added = flipped = 0
-    since_ts = 0  # no window: the button means ALL history
-    for page_no in range(FULL_HISTORY_PAGES):
-        acts = garmin.activities_page(page_no * PAGE, PAGE)
-        if not acts:
-            break
-        for a in acts:
-            aid = str(a.get("activityId") or "")
-            if not aid:
-                continue
-            known = state.activity(uid, aid)
-            if known:
-                # the user may have widened their types after the first run: backlog and
-                # previously-ignored activities of a now-matching type join the upload queue
-                if known["status"] in ("backlog", "ignored") and is_ride(types, a):
-                    state.set_status(uid, aid, "new")
-                    flipped += 1
-                continue
-            row = summary_row(a)
-            status = "new" if is_ride(types, a) else "ignored"
-            if state.insert_activity(uid, aid, row["name"], row["type"], row["start_ts"],
-                                     row["distance_km"], status):
-                added += 1
-        if len(acts) < PAGE:
-            break
-    return added, flipped

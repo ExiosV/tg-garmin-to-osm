@@ -36,6 +36,9 @@ class _Garmin:
         self.fetched += 1
         return self.activities
 
+    def activities_page(self, offset, limit=100):
+        return self.activities[offset:offset + limit]
+
     def activity(self, aid):
         if self.detail is not None:
             return self.detail

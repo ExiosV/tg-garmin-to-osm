@@ -23,11 +23,13 @@ STAGE_OSM_CODE = "osm_code"  # legacy stage id, reused from the /login fallback
 
 CB_BACKFILL = "onb:backfill"
 CB_BACKFILL_CONFIRM = "onb:backfill:confirm"
+CB_BACKFILL_STOP = "onb:backfill:stop"
 
 
-def main_menu_rows(lang: str, both_linked: bool = False):
+def main_menu_rows(lang: str, both_linked: bool = False, backfill_running: bool = False):
     """(text-key, rows) for the main onboarding menu. The upload-everything button appears only
-    for users with both accounts linked (it uploads ALL history and keeps auto-uploads on)."""
+    for users with both accounts linked (it uploads ALL history and keeps auto-uploads on);
+    a stop button appears while a backfill is running."""
     if lang == "ru":
         rows = [
             [("🔗 Привязать Garmin", CB_GARMIN_START)],
@@ -37,7 +39,10 @@ def main_menu_rows(lang: str, both_linked: bool = False):
                 "Garmin привязывается Personal API ключом (покажу, где его взять), OSM — через "
                 "сайт или код.")
         if both_linked:
-            rows.append([("📦 Залить все старые + новые", CB_BACKFILL)])
+            if backfill_running:
+                rows.append([("🛑 Остановить заливку истории", CB_BACKFILL_STOP)])
+            else:
+                rows.append([("📦 Залить все старые + новые", CB_BACKFILL)])
             text += ("\n\n📦 «Залить всё» загрузит ВСЕ ваши поездки за всю историю в OSM "
                      "(уже залитые пропустит) и включит автозагрузку новых. Поездка попадает в OSM "
                      "через ~10–20 минут после синхронизации часов.")
@@ -51,7 +56,10 @@ def main_menu_rows(lang: str, both_linked: bool = False):
                 "Garmin links with a Personal API key (I will show you where to get it), OSM via "
                 "the site or a code.")
         if both_linked:
-            rows.append([("📦 Upload everything: old + new", CB_BACKFILL)])
+            if backfill_running:
+                rows.append([("🛑 Stop the history upload", CB_BACKFILL_STOP)])
+            else:
+                rows.append([("📦 Upload everything: old + new", CB_BACKFILL)])
             text += ("\n\n📦 “Upload everything” sends ALL your past rides to OSM (already-uploaded "
                      "ones are skipped) and keeps auto-uploading new ones. A ride reaches OSM "
                      "~10–20 minutes after your watch syncs.")
