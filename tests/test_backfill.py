@@ -109,3 +109,19 @@ def test_run_backfill_selects_users(tmp_path, monkeypatch):
 def test_trace_date_parsing_tolerates_garbage():
     assert bf._trace_dates([{"timestamp": "2026-09-16T12:00:00Z"},
                             {"timestamp": ""}, {"timestamp": None}]) == {datetime.date(2026, 9, 16)}
+
+
+def test_scan_history_flips_ignored_after_types_widened(tmp_path, monkeypatch):
+    """User ran the backfill with bike-only, then added walk to /types and presses
+    'upload everything' again: their walks must join the upload queue."""
+    history = [gact(1, "Walk", "walking", "2026-09-02 07:00:00"),
+               gact(2, "Ride", "cycling", "2026-09-03 06:00:00")]
+    c, st, garmin, tg, u = seeded_history(tmp_path, monkeypatch, history)
+    st.set_setting(42, "types", "bike")  # first run: bike only
+    added, _ = bf.scan_history(c, garmin, st, st.user(42), "2026-08-22")
+    assert st.activity(42, "1")["status"] == "ignored"
+    st.set_setting(42, "types", "bike,walk")  # the user widens their types
+    added, flipped = bf.scan_history(c, garmin, st, st.user(42), "2026-08-22")
+    assert added == 0 and flipped == 1
+    assert st.activity(42, "1")["status"] == "new"  # the walk joins the next upload pass
+    assert st.activity(42, "2")["status"] == "new"

@@ -12,7 +12,10 @@ from .config import Config
 from .garmin import GarminClient
 from .osm import Osm, OsmError
 from .redact import redact
-from .runner import activity_start_ts, expand_types_user, is_ride, summary_row, upload_one, user_vis
+from .runner import (
+    activity_start_ts, expand_types_user, garmin_client_for, is_ride, summary_row,
+    upload_one, user_vis,
+)
 from .state import State
 from .telegram import Telegram
 
@@ -50,7 +53,9 @@ def scan_history(cfg: Config, garmin: GarminClient, state: State, user: dict, si
                 continue
             known = state.activity(uid, aid)
             if known:
-                if known["status"] == "backlog" and is_ride(types, a):
+                # the user may have widened their types after the first run: backlog and
+                # previously-ignored activities of a now-matching type join the upload queue
+                if known["status"] in ("backlog", "ignored") and is_ride(types, a):
                     state.set_status(uid, aid, "new")
                     flipped += 1
                 continue
@@ -266,7 +271,9 @@ def _scan_all(cfg: Config, garmin, state: State, user: dict) -> tuple:
                 continue
             known = state.activity(uid, aid)
             if known:
-                if known["status"] == "backlog" and is_ride(types, a):
+                # the user may have widened their types after the first run: backlog and
+                # previously-ignored activities of a now-matching type join the upload queue
+                if known["status"] in ("backlog", "ignored") and is_ride(types, a):
                     state.set_status(uid, aid, "new")
                     flipped += 1
                 continue
