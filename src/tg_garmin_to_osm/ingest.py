@@ -15,6 +15,7 @@ from . import osm as osmmod
 from .config import TYPE_GROUPS, VISIBILITIES, Config
 from .garmin import user_token_dir
 from .osm import Osm
+from .backfill import backfill_status
 from .metrics import METRICS
 from .redact import redact
 from .runner import (WORK_LOCK, Runner, apply_garmin_key_pure, garmin_client_for, ingest_garmin_link,
@@ -403,7 +404,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         for ev in self.state.events(uid, 200):  # newest first
             if ev["kind"] == "processed" and ev["data"].get("edit_url"):
                 edit_urls.setdefault(str(ev["data"].get("activity_id")), ev["data"]["edit_url"])
-        activities = [self._activity_view(user, a, edit_urls) for a in self.state.recent_activities(uid, 30)]
+        activities = [self._activity_view(user, a, edit_urls) for a in self.state.recent_activities(uid, 200)]
         return {
             "uid": uid,
             "channel": user.get("channel") or "telegram",
@@ -424,6 +425,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             "counts": self.state.counts(uid),
             "activities": activities,
             "events": self.state.events(uid, 30),
+            "backfill": backfill_status(self.state, uid),
         }
 
     def log_message(self, *args) -> None:

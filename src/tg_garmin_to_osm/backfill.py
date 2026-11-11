@@ -155,11 +155,12 @@ def backfill_status(state: State, uid: int) -> dict:
     running = _BACKFILL_THREADS.get(uid) is not None and _BACKFILL_THREADS[uid].is_alive()
     return {
         "running": running,
-        "done": state.get_meta(f"backfill_done:{uid}") or 0,
-        "total": state.get_meta(f"backfill_total:{uid}") or 0,
-        "uploaded": state.get_meta(f"backfill_uploaded:{uid}") or 0,
-        "skipped": state.get_meta(f"backfill_skipped:{uid}") or 0,
-        "failed": state.get_meta(f"backfill_failed:{uid}") or 0,
+        "done": int(state.get_meta(f"backfill_done:{uid}") or 0),
+        "total": int(state.get_meta(f"backfill_total:{uid}") or 0),
+        "uploaded": int(state.get_meta(f"backfill_uploaded:{uid}") or 0),
+        "skipped": int(state.get_meta(f"backfill_skipped:{uid}") or 0),
+        "failed": int(state.get_meta(f"backfill_failed:{uid}") or 0),
+        "started_ts": int(state.get_meta(f"backfill_started_ts:{uid}") or 0),
         "error": state.get_meta(f"backfill_error:{uid}") or "",
     }
 
@@ -201,6 +202,7 @@ def _thread_target(cfg: Config, tg: Telegram | None, state: State, user: dict) -
         total = len(rows)
         uploaded = skipped = failed = 0
         state.set_meta(f"backfill_total:{uid}", str(total))
+        state.set_meta(f"backfill_started_ts:{uid}", str(int(time.time())))
         state.set_meta(f"backfill_uploaded:{uid}", "0")
         state.set_meta(f"backfill_skipped:{uid}", "0")
         state.set_meta(f"backfill_failed:{uid}", "0")
