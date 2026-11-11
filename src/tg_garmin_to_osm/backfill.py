@@ -160,13 +160,16 @@ def cancel_backfill(state: State, uid: int) -> None:
 
 def backfill_status(state: State, uid: int) -> dict:
     running = _BACKFILL_THREADS.get(uid) is not None and _BACKFILL_THREADS[uid].is_alive()
+    uploaded = int(state.get_meta(f"backfill_uploaded:{uid}") or 0)
+    skipped = int(state.get_meta(f"backfill_skipped:{uid}") or 0)
+    failed = int(state.get_meta(f"backfill_failed:{uid}") or 0)
     return {
         "running": running,
-        "done": int(state.get_meta(f"backfill_done:{uid}") or 0),
         "total": int(state.get_meta(f"backfill_total:{uid}") or 0),
-        "uploaded": int(state.get_meta(f"backfill_uploaded:{uid}") or 0),
-        "skipped": int(state.get_meta(f"backfill_skipped:{uid}") or 0),
-        "failed": int(state.get_meta(f"backfill_failed:{uid}") or 0),
+        "uploaded": uploaded,
+        "skipped": skipped,
+        "failed": failed,
+        "done": uploaded + skipped + failed,
         "started_ts": int(state.get_meta(f"backfill_started_ts:{uid}") or 0),
         "error": state.get_meta(f"backfill_error:{uid}") or "",
     }
@@ -263,10 +266,7 @@ def _thread_target(cfg: Config, tg: Telegram | None, state: State, user: dict) -
                 tg.send(user["chat_id"], summary)
             except Exception:
                 pass
-        state.delete_meta(f"backfill_uploaded:{uid}")
-        state.delete_meta(f"backfill_skipped:{uid}")
-        state.delete_meta(f"backfill_failed:{uid}")
-        state.delete_meta(f"backfill_total:{uid}")
+        # keep the counters: the account page shows the "finished" banner after a reload
         state.delete_meta(f"backfill_error:{uid}")
         log.info("backfill user %s finished: uploaded=%d skipped=%d failed=%d", uid, uploaded, skipped, failed)
     except Exception as e:

@@ -383,15 +383,14 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     # -- helpers -----------------------------------------------------------------------------------------
 
-    def _activity_view(self, user: dict, act: dict, edit_urls: dict) -> dict:
+    def _activity_view(self, user: dict, act: dict) -> dict:
         """One activities row in the contract shape (internal columns dropped)."""
         trace_id = act.get("trace_id")
         trace_url = edit_url = None
         if trace_id:
             trace_url = osmmod.trace_link(self.cfg.osm_base, trace_id, user.get("osm_name") or "")
             if act["status"] == "done":
-                edit_url = (edit_urls.get(act["activity_id"])
-                            or f"{self.cfg.osm_base.rstrip('/')}/edit?editor=id&gpx={int(trace_id)}")
+                edit_url = f"{self.cfg.osm_base.rstrip('/')}/edit?editor=id&gpx={int(trace_id)}"
         actions = []
         if act["status"] in UPLOAD_STATUSES:
             actions.append("upload")
@@ -404,12 +403,7 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def _build_user_response(self, user: dict) -> dict:
         uid = user["user_id"]
-        # edit links come from the newest 'processed' event of each activity
-        edit_urls: dict = {}
-        for ev in self.state.events(uid, 200):  # newest first
-            if ev["kind"] == "processed" and ev["data"].get("edit_url"):
-                edit_urls.setdefault(str(ev["data"].get("activity_id")), ev["data"]["edit_url"])
-        activities = [self._activity_view(user, a, edit_urls) for a in self.state.recent_activities(uid, 200)]
+        activities = [self._activity_view(user, a) for a in self.state.recent_activities(uid, 200)]
         return {
             "uid": uid,
             "channel": user.get("channel") or "telegram",

@@ -301,8 +301,8 @@ def test_get_user_activity_shape_and_links(tmp_path):
     st.set_status(42, "3", "done", 8)
     st.insert_activity(42, "4", "D", "cycling", 50, 10.0, "uploaded")
     st.set_status(42, "4", "done", 9)
-    st.add_event(42, "processed", {"activity_id": "3", "trace_id": 8, "edit_url": "https://e/old"})
-    st.add_event(42, "processed", {"activity_id": "3", "trace_id": 8, "edit_url": "https://e/new"})
+    # edit links are deterministic from the trace id now; the processed event no longer carries one
+
     try:
         code, body = call(port, "GET", "/api/users/42")
         assert code == 200
@@ -311,7 +311,7 @@ def test_get_user_activity_shape_and_links(tmp_path):
         assert rows["1"]["trace_url"] is None and rows["1"]["edit_url"] is None
         assert rows["2"]["trace_url"] == "https://www.openstreetmap.org/user/mapper/traces/7"
         assert rows["2"]["edit_url"] is None  # only 'done' rows get an edit link
-        assert rows["3"]["edit_url"] == "https://e/new"  # the newest processed event
+        assert rows["3"]["edit_url"] == "https://www.openstreetmap.org/edit?editor=id&gpx=8"
         assert rows["4"]["edit_url"] == "https://www.openstreetmap.org/edit?editor=id&gpx=9"
     finally:
         server.shutdown()
