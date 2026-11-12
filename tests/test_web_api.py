@@ -1118,3 +1118,16 @@ def test_metrics_endpoint(tmp_path):
     assert "limit_storage_bytes" in text and "limit_web_users" in text
     assert "events_total" in text
     assert "SECRETTOKEN1" not in text and "KEY21" not in text  # no secrets in metrics
+
+
+def test_failed_list_in_user_response(tmp_path):
+    c, st, runner, server, port = make_test_server(tmp_path)
+    st.touch_user(31, -1031, "en")
+    st.insert_activity(31, "701", "Broken", "cycling", 100, 10.0, "new")
+    st.record_failure(31, "701", "no_track: no <trkpt> track points in the file", 1)
+    st.db.execute("UPDATE activities SET status='failed' WHERE user_id=31 AND activity_id='701'")
+    st.db.commit()
+    code, body = get(port, "/api/users/31", "SECRETTOKEN1")
+    assert code == 200 and "failed" in body
+    assert body["failed"][0]["activity_id"] == "701"
+    assert "no_track" in body["failed"][0]["last_error"]

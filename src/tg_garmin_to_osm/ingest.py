@@ -423,6 +423,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             "delay_minutes": self.cfg.upload_delay_minutes,
             "counts": self.state.counts(uid),
             "activities": activities,
+            "failed": [self._activity_view(user, a) for a in self.state.failed_activities(uid, 50)],
             "events": self.state.events(uid, 30),
             "backfill": backfill_status(self.state, uid),
         }

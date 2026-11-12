@@ -176,3 +176,19 @@ def test_fresh_start_clears_cancel_flag(tmp_path, monkeypatch):
     assert st.get_meta("backfill_cancel:42") is None
     bf._BACKFILL_THREADS.pop(42, None)
     st.delete_meta("backfill_running:42")
+
+
+def test_scan_history_retries_failed_but_not_no_track(tmp_path, monkeypatch):
+    history = [gact(1, "Broken", "cycling", "2026-09-02 06:00:00"),
+               gact(2, "Temp fail", "cycling", "2026-09-03 06:00:00")]
+    c, st, garmin, tg, u = seeded_history(tmp_path, monkeypatch, history)
+    bf.scan_history(c, garmin, st, u, since="2026-08-22")
+    st.record_failure(42, "1", "no_track: no <trkpt> track points in the file", 1)
+    st.db.execute("UPDATE activities SET status='failed' WHERE activity_id='1'")
+    st.record_failure(42, "2", "upload_gpx: HTTP 400", 1)
+    st.db.execute("UPDATE activities SET status='failed' WHERE activity_id='2'")
+    st.db.commit()
+    added, flipped = bf.scan_history(c, garmin, st, u, since="2026-08-22")
+    assert flipped == 1
+    assert st.activity(42, "1")["status"] == "failed"   # permanent: no GPS points
+    assert st.activity(42, "2")["status"] == "new"      # retried on the next run

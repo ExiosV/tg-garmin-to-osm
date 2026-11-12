@@ -55,9 +55,11 @@ def scan_history(cfg: Config, garmin: GarminClient, state: State, user: dict,
                 continue
             known = state.activity(uid, aid)
             if known:
-                # the user may have widened their types after the first run: backlog and
-                # previously-ignored activities of a now-matching type join the upload queue
-                if known["status"] in ("backlog", "ignored") and is_ride(types, a):
+                # the user may have widened their types after the first run, or may be re-running
+                # after failures: backlog/ignored/failed (except permanent no_track) rejoin the queue
+                if (known["status"] in ("backlog", "ignored", "failed")
+                        and is_ride(types, a)
+                        and not (known["last_error"] or "").startswith("no_track")):
                     state.set_status(uid, aid, "new")
                     flipped += 1
                 continue

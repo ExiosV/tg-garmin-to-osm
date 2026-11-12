@@ -88,6 +88,17 @@ def summary_row(a: dict) -> dict:
     }
 
 
+def _tags_for(row: dict, cfg: Config) -> str:
+    """Tags for the trace: the activity's own type key plus its type-group name (bike/run/...).
+    The fixed TRACE_TAGS env tag is kept as an extra only when the type maps to no group."""
+    tk = (row.get("type") or "").strip().lower()
+    if not tk:
+        return cfg.trace_tags
+    group = next((name for name, members in TYPE_GROUPS.items() if tk in members), tk)
+    base = (cfg.trace_tags or "").strip()
+    return f"{group},{base}" if base and base != group else group
+
+
 def _detail_course(garmin: GarminClient, aid: str) -> str:
     """Course name for the trace description; only rides linked to one of the user's own courses
     resolve to a name (a foreign/deleted course id cannot be fetched)."""
@@ -184,8 +195,9 @@ def upload_one(cfg: Config, garmin: GarminClient, osm: Osm, state: State, user: 
     row = dict(row)
     row["course"] = _detail_course(garmin, aid)
     desc = gpxmod.description(row, lang)
+    tags = _tags_for(row, cfg)
     try:
-        trace_id = osm.upload_gpx(data, desc, cfg.trace_tags, vis)
+        trace_id = osm.upload_gpx(data, desc, tags, vis)
     except OsmError as e:
         status = _fail_osm(state, user, row, e)
         if e.status == 401:
