@@ -755,3 +755,16 @@ def test_handle_updates_dispatches_callbacks(tmp_path):
     assert handle_updates(c, tg, st) == 1
     assert any("personalApiToken" in t for _, t in tg.sent)
     assert st.get_meta("updates_offset") == "31"
+
+
+def test_tags_follow_the_activity_type(tmp_path, monkeypatch):
+    c, st, garmin, tg, u = seeded(tmp_path, monkeypatch, [act(1, type_key="walking", name="Прогулка"),
+                                                           act(2, type_key="gravel_cycling", name="Гравел")],
+                                  types="bike,walk")
+    assert upload_all(c, garmin, tg, st, u) == 2
+    fake = _Osm.instances[-1]
+    tags = {u["description"]: u["tags"] for u in fake.uploaded if u["description"]}
+    walk_desc = [d for d in tags if "Прогулка" in d]
+    ride_desc = [d for d in tags if "Гравел" in d]
+    assert tags[walk_desc[0]] == "walk"       # a hike/walk is never tagged bike
+    assert tags[ride_desc[0]] == "bike"       # gravel_cycling maps to the bike group

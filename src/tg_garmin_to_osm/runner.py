@@ -89,14 +89,12 @@ def summary_row(a: dict) -> dict:
 
 
 def _tags_for(row: dict, cfg: Config) -> str:
-    """Tags for the trace: the activity's own type key plus its type-group name (bike/run/...).
-    The fixed TRACE_TAGS env tag is kept as an extra only when the type maps to no group."""
+    """Tags for the trace: the type's group name (bike/run/walk/...) when the type maps to one,
+    otherwise the raw Garmin typeKey. Never a fixed tag: a hike must not be tagged bike."""
     tk = (row.get("type") or "").strip().lower()
     if not tk:
-        return cfg.trace_tags
-    group = next((name for name, members in TYPE_GROUPS.items() if tk in members), tk)
-    base = (cfg.trace_tags or "").strip()
-    return f"{group},{base}" if base and base != group else group
+        return ""
+    return next((name for name, members in TYPE_GROUPS.items() if tk in members), tk)
 
 
 def _detail_course(garmin: GarminClient, aid: str) -> str:
